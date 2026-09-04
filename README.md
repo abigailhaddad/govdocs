@@ -55,6 +55,24 @@ further listings one level deep. Crude, but it works everywhere and degrades to
 finding nothing rather than breaking. robots.txt is honoured per host and every
 host gets its own rate limiter.
 
+### Adding a department
+
+`govdocs/sources/profiles.py` holds what is known about individual agencies:
+how to page through a listing, how to recognise a document link, how to pull a
+title out of a row, and whether the host needs a proxy. Profiles are keyed by
+HOST rather than by agency, because departments share platforms -- one entry
+covers all 23 justice.gov reading rooms.
+
+Adding a department means adding an entry there. Anything without one still gets
+the generic treatment.
+
+Two things worth knowing before writing one. DOJ serves files from
+`/<component>/media/<id>/dl` rather than as `.pdf` links, so a naive PDF scrape
+of a DOJ page finds nothing. And justice.gov serves its front page happily while
+returning 403 to every `?page=N` request, browser headers and all, which is why
+that host is marked `via_proxy` and goes through ScraperAPI. Those requests cost
+credits, so the flag is per host rather than a global fallback.
+
 `oversight` reads oversight.gov's api/v2/reports, the government-wide feed of
 Inspector General work. One call covers 47 OIGs. It ignores pagination —
 `page`, `offset` and `items_per_page` all return the same 1,063 rows — so it is

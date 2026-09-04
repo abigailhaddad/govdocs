@@ -27,6 +27,8 @@ from typing import Iterator
 
 import requests
 
+from .profiles import for_url
+
 COMPONENTS_API = "https://api.foia.gov/api/agency_components"
 DIRECTORY = Path("data/reading_rooms.json")
 REFRESH_AFTER_DAYS = 30
@@ -120,28 +122,56 @@ class FoiaRooms:
     def _get(self, url: str) -> str | None:
         if self.calls >= self.max_calls or not self._allowed(url):
             return None
+        prof = for_url(url)
         self._wait(url)
         self.calls += 1
         try:
-            r = self.session.get(url, timeout=60)
+            if prof and prof.via_proxy and os.environ.get("SCRAPERAPI_KEY"):
+                r = self.session.get(
+                    "https://api.scraperapi.com/", timeout=180,
+                    params={"api_key": os.environ["SCRAPERAPI_KEY"], "url": url})
+            else:
+                r = self.session.get(url, timeout=60)
         except requests.RequestException:
             return None
-        if r.status_code != 200 or "html" not in r.headers.get("content-type", ""):
+        if r.status_code != 200:
+            return None
+        if "html" not in r.headers.get("content-type", "") and "<html" not in r.text[:400].lower():
             return None
         return r.text
 
-    def _links(self, html: str, base: str) -> tuple[list[str], list[str]]:
-        docs, listings = [], []
+    def _links(self, html: str, base: str) -> tuple[list[tuple[str, str]], list[str]]:
+        """Document links (with a title where the profile can find one), and
+        further listing pages."""
+        if not html:
+            return [], []
+        prof = for_url(base)
+        docs: list[tuple[str, str]] = []
+        listings: list[str] = []
         host = urllib.parse.urlsplit(base).netloc
+
+        if prof and prof.row_re is not None:
+            for m in prof.row_re.finditer(html):
+                href = urllib.parse.urljoin(base, m.group(1))
+                title = re.sub(r"\s+", " ", m.group(2)).strip()
+                docs.append((href, title[:300]))
+
         for m in re.finditer(r'href="([^"#]+)"', html, re.I):
             href = urllib.parse.urljoin(base, m.group(1))
             if urllib.parse.urlsplit(href).netloc != host:
                 continue
-            if DOC_RE.search(href):
-                docs.append(href)
+            if DOC_RE.search(href) or (prof and prof.doc_re and prof.doc_re.search(href)):
+                docs.append((href, ""))
             elif LISTING_RE.search(href):
                 listings.append(href)
-        return list(dict.fromkeys(docs)), list(dict.fromkeys(listings))
+
+        seen, out = set(), []
+        for href, title in docs:
+            if href in seen:
+                continue
+            seen.add(href)
+            out.append((href, title))
+        return out, list(dict.fromkeys(listings))
 
     def discover(self, since: str, until: str | None = None,
                  limit: int | None = None) -> Iterator[dict]:
@@ -154,16 +184,32 @@ class FoiaRooms:
             if not html:
                 continue
             docs, listings = self._links(html, start)
-            for page in listings[:MAX_LISTING_PAGES]:
-                sub = self._get(page)
-                if sub:
-                    more, _ = self._links(sub, page)
+
+            prof = for_url(start)
+            if prof and prof.page_param:
+                # Walk the agency's own pagination rather than guessing from
+                # links: the front page is a small slice of the library.
+                for page_no in range(1, prof.max_pages):
+                    nxt = start + prof.page_param.format(n=page_no)
+                    sub = self._get(nxt)
+                    if not sub:
+                        break
+                    more, _ = self._links(sub, nxt)
+                    if not more:
+                        break
                     docs.extend(more)
-            for url in dict.fromkeys(docs):
+            else:
+                for page in listings[:MAX_LISTING_PAGES]:
+                    sub = self._get(page)
+                    if sub:
+                        more, _ = self._links(sub, page)
+                        docs.extend(more)
+            for url, row_title in dict.fromkeys(docs):
                 if url in seen_docs:
                     continue
                 seen_docs.add(url)
-                name = urllib.parse.unquote(url.rstrip("/").split("/")[-1].split("?")[0])
+                name = row_title or urllib.parse.unquote(
+                    url.rstrip("/").split("/")[-1].split("?")[0])
                 yield {
                     "source": "foia_rooms",
                     "notice_id": str(abs(hash(url)) % (10 ** 12)),
