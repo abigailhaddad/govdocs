@@ -7,15 +7,19 @@ Collection and publication are separate steps on purpose. Fetching is slow and
 rate-limited and wants to run often in small bites; pushing to Hugging Face is a
 single large commit and wants to run rarely.
 
-R2 is the system of record. The staging directory is a disposable view of what
-has not been published yet, so an interrupted upload costs bandwidth and nothing
-else.
+R2 is the only copy. Nothing accumulates on disk: a document is held just long
+enough to count its pages, then written to R2 and deleted. Publishing streams
+back out of R2 in batches, so peak local use is one batch rather than the whole
+archive -- which matters when the archive is tens of gigabytes and the laptop is
+not.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -26,9 +30,12 @@ from .sources.sam import Sam
 
 SOURCES = {"foia_rooms": FoiaRooms, "oversight": Oversight, "sam": Sam}
 
-STAGE = Path("data/stage")
 SEEN = Path("data/seen.jsonl")
 MAX_BYTES = 200 * 1024 * 1024
+
+# How many documents to hold on disk at once while publishing. 300 averages a
+# few hundred megabytes and keeps each Hugging Face commit a sane size.
+BATCH = 300
 
 EXT_CONTENT_TYPE = {
     ".pdf": "application/pdf",
@@ -77,8 +84,7 @@ def collect(source_name: str, since: str, limit: int, max_calls: int) -> None:
     collection = src.collection
 
     keys, hashes = _seen()
-    staged = STAGE / collection / "documents" / source_name
-    staged.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="govdocs-"))
     got = dupes = 0
     t0 = time.time()
 
@@ -109,23 +115,27 @@ def collect(source_name: str, since: str, limit: int, max_calls: int) -> None:
         r2_key = f"{source_name}/{doc_id}{ext}"
         store.put(s3, r2_key, data, EXT_CONTENT_TYPE.get(ext, "application/octet-stream"))
 
-        out = staged / f"{doc_id}{ext}"
-        out.write_bytes(data)
+        # Held only long enough to read the page count, then removed. R2 is the
+        # copy that matters and disk here is not free.
+        pages = 0
+        if ext == ".pdf":
+            tmp = scratch / f"{doc_id}{ext}"
+            tmp.write_bytes(data)
+            pages = _page_count(tmp)
+            tmp.unlink(missing_ok=True)
 
         _record({"key": key, "sha256": digest, "r2_key": r2_key,
                  "doc_id": doc_id, "ext": ext, "bytes": len(data),
-                 "pages": _page_count(out) if ext == ".pdf" else 0,
+                 "pages": pages,
                  "filename": filename, "collection": collection, **rec})
         got += 1
 
+    shutil.rmtree(scratch, ignore_errors=True)
     print(f"collected {got} documents in {time.time()-t0:.0f}s "
           f"({dupes} duplicate files skipped, {src.calls} search calls)")
 
 
-def build_metadata(collection: str) -> Path:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
+def _rows_for(collection: str) -> list[dict]:
     rows = []
     if SEEN.exists():
         for line in SEEN.read_text().splitlines():
@@ -134,6 +144,50 @@ def build_metadata(collection: str) -> Path:
             except Exception:
                 continue
             if r.get("collection") == collection and r.get("doc_id"):
+                rows.append(r)
+    return rows
+
+
+def publish_collection(collection: str) -> str:
+    """Stream the archive out of R2 and into Hugging Face, a batch at a time."""
+    s3 = store.client()
+    rows = _rows_for(collection)
+    repo_id = publish.ensure_dataset(collection)
+
+    meta_dir = Path(tempfile.mkdtemp(prefix="govdocs-meta-"))
+    build_metadata(collection, meta_dir)
+    publish.upload_folder(collection, meta_dir, "Update metadata")
+    shutil.rmtree(meta_dir, ignore_errors=True)
+
+    for start in range(0, len(rows), BATCH):
+        chunk = rows[start:start + BATCH]
+        work = Path(tempfile.mkdtemp(prefix="govdocs-batch-"))
+        try:
+            for r in chunk:
+                dest = work / "documents" / r.get("source", "") / f"{r['doc_id']}{r.get('ext','')}"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    body = s3.get_object(Bucket=store.bucket(), Key=r["r2_key"])["Body"].read()
+                except Exception:
+                    continue
+                dest.write_bytes(body)
+            publish.upload_folder(
+                collection, work,
+                f"Add documents {start + 1}-{start + len(chunk)}")
+            print(f"  uploaded {start + len(chunk)}/{len(rows)}", flush=True)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    return repo_id
+
+
+def build_metadata(collection: str, out_dir: Path) -> Path:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    rows = []
+    if True:
+        for r in _rows_for(collection):
+            if True:
                 rows.append({
                     "doc_id": r["doc_id"], "source": r.get("source", ""),
                     "title": r.get("title", ""), "agency": r.get("agency", ""),
@@ -145,7 +199,7 @@ def build_metadata(collection: str) -> Path:
                     "sha256": r.get("sha256", ""),
                     "path": f"documents/{r.get('source','')}/{r['doc_id']}{r.get('ext','')}",
                 })
-    out = STAGE / collection / "metadata.parquet"
+    out = out_dir / "metadata.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(rows), out)
     print(f"metadata.parquet: {len(rows)} rows")
@@ -164,10 +218,7 @@ def main() -> None:
 
     store.load_env()
     if a.publish:
-        build_metadata(a.publish)
-        repo = publish.ensure_dataset(a.publish)
-        publish.upload_folder(a.publish, STAGE / a.publish,
-                              f"Add documents ({time.strftime('%Y-%m-%d')})")
+        repo = publish_collection(a.publish)
         print(f"published to https://huggingface.co/datasets/{repo}")
         return
     collect(a.source, a.since, a.limit, a.max_calls)
