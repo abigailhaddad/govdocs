@@ -20,10 +20,11 @@ import time
 from pathlib import Path
 
 from . import publish, store
+from .sources.foia_rooms import FoiaRooms
 from .sources.oversight import Oversight
 from .sources.sam import Sam
 
-SOURCES = {"oversight": Oversight, "sam": Sam}
+SOURCES = {"foia_rooms": FoiaRooms, "oversight": Oversight, "sam": Sam}
 
 STAGE = Path("data/stage")
 SEEN = Path("data/seen.jsonl")

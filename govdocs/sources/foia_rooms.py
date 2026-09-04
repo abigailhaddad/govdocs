@@ -1,0 +1,188 @@
+"""foia_rooms.py — documents from every federal FOIA reading room.
+
+api.foia.gov publishes the government's own directory of FOIA offices, and each
+component record carries the URL of its reading room. That is 615 components and
+311 reading rooms across 223 hosts -- DOJ alone lists 23 -- which is the whole
+federal FOIA estate without writing a scraper per agency.
+
+Their layouts have nothing in common, so this does not try to parse them. It
+fetches a reading room, takes every document link on the page, and follows
+same-host links that look like further listing pages one level deep. Crude, but
+it works everywhere and degrades to "found nothing here" rather than breaking.
+
+robots.txt is honoured per host, fetched once and cached, and every host gets its
+own rate limiter: 223 agencies, none of whom asked to be crawled.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+import urllib.parse
+import urllib.robotparser
+from pathlib import Path
+from typing import Iterator
+
+import requests
+
+COMPONENTS_API = "https://api.foia.gov/api/agency_components"
+DIRECTORY = Path("data/reading_rooms.json")
+REFRESH_AFTER_DAYS = 30
+
+USER_AGENT = ("govdocs/0.1 (federal document archive; "
+              "contact: abigail.haddad@gmail.com)")
+
+DOC_RE = re.compile(r"\.(pdf|docx?|xlsx?)(\?|$)", re.I)
+# Pages that look like more of the same listing rather than site furniture.
+LISTING_RE = re.compile(
+    r"(foia|reading[-_]?room|library|records|releases?|logs?|disclosure"
+    r"|frequently[-_]requested|page=\d+|\?page)", re.I)
+
+PER_HOST_DELAY = 2.0
+MAX_LISTING_PAGES = 8
+
+
+def refresh_directory(api_key: str | None = None, force: bool = False) -> list[dict]:
+    """The government's own list of FOIA offices and their reading rooms."""
+    if DIRECTORY.exists() and not force:
+        age = (time.time() - DIRECTORY.stat().st_mtime) / 86400
+        if age < REFRESH_AFTER_DAYS:
+            return json.loads(DIRECTORY.read_text())
+
+    key = api_key or os.environ.get("DATAGOV_API_KEY") or "DEMO_KEY"
+    out, url, pages = [], f"{COMPONENTS_API}?api_key={key}", 0
+    session = requests.Session()
+    session.headers["User-Agent"] = USER_AGENT
+    while url and pages < 60:
+        r = session.get(url, timeout=90)
+        if r.status_code != 200:
+            break
+        d = r.json()
+        for row in d.get("data") or []:
+            a = row.get("attributes") or {}
+            for rr in a.get("reading_rooms") or []:
+                uri = rr.get("uri") if isinstance(rr, dict) else None
+                if uri:
+                    out.append({"url": uri,
+                                "abbreviation": a.get("abbreviation") or "",
+                                "title": rr.get("title") or ""})
+        nxt = (d.get("links") or {}).get("next")
+        url = nxt.get("href") if isinstance(nxt, dict) else None
+        if url and "api_key=" not in url:
+            url += ("&" if "?" in url else "?") + "api_key=" + key
+        pages += 1
+        time.sleep(0.4)
+    if out:
+        DIRECTORY.parent.mkdir(parents=True, exist_ok=True)
+        DIRECTORY.write_text(json.dumps(out, indent=0))
+    return out
+
+
+class FoiaRooms:
+    name = "foia_rooms"
+    collection = "foia"
+
+    def __init__(self, max_calls: int = 400):
+        self.session = requests.Session()
+        self.session.headers["User-Agent"] = USER_AGENT
+        self.max_calls = max_calls
+        self.calls = 0
+        self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+        self._last_hit: dict[str, float] = {}
+
+    def _allowed(self, url: str) -> bool:
+        host = urllib.parse.urlsplit(url).netloc
+        if host not in self._robots:
+            rp = urllib.robotparser.RobotFileParser()
+            rp.set_url(f"{urllib.parse.urlsplit(url).scheme}://{host}/robots.txt")
+            try:
+                rp.read()
+            except Exception:
+                rp = None          # unreachable robots.txt: treat as permissive
+            self._robots[host] = rp
+        rp = self._robots[host]
+        if rp is None:
+            return True
+        try:
+            return rp.can_fetch(USER_AGENT, url)
+        except Exception:
+            return True
+
+    def _wait(self, url: str) -> None:
+        host = urllib.parse.urlsplit(url).netloc
+        gap = PER_HOST_DELAY - (time.monotonic() - self._last_hit.get(host, 0))
+        if gap > 0:
+            time.sleep(gap)
+        self._last_hit[host] = time.monotonic()
+
+    def _get(self, url: str) -> str | None:
+        if self.calls >= self.max_calls or not self._allowed(url):
+            return None
+        self._wait(url)
+        self.calls += 1
+        try:
+            r = self.session.get(url, timeout=60)
+        except requests.RequestException:
+            return None
+        if r.status_code != 200 or "html" not in r.headers.get("content-type", ""):
+            return None
+        return r.text
+
+    def _links(self, html: str, base: str) -> tuple[list[str], list[str]]:
+        docs, listings = [], []
+        host = urllib.parse.urlsplit(base).netloc
+        for m in re.finditer(r'href="([^"#]+)"', html, re.I):
+            href = urllib.parse.urljoin(base, m.group(1))
+            if urllib.parse.urlsplit(href).netloc != host:
+                continue
+            if DOC_RE.search(href):
+                docs.append(href)
+            elif LISTING_RE.search(href):
+                listings.append(href)
+        return list(dict.fromkeys(docs)), list(dict.fromkeys(listings))
+
+    def discover(self, since: str, until: str | None = None,
+                 limit: int | None = None) -> Iterator[dict]:
+        rooms = refresh_directory()
+        n = 0
+        seen_docs: set[str] = set()
+        for room in rooms:
+            start = room["url"]
+            html = self._get(start)
+            if not html:
+                continue
+            docs, listings = self._links(html, start)
+            for page in listings[:MAX_LISTING_PAGES]:
+                sub = self._get(page)
+                if sub:
+                    more, _ = self._links(sub, page)
+                    docs.extend(more)
+            for url in dict.fromkeys(docs):
+                if url in seen_docs:
+                    continue
+                seen_docs.add(url)
+                name = urllib.parse.unquote(url.rstrip("/").split("/")[-1].split("?")[0])
+                yield {
+                    "source": "foia_rooms",
+                    "notice_id": str(abs(hash(url)) % (10 ** 12)),
+                    "index": 0,
+                    "url": url,
+                    "landing_url": start,
+                    "title": name[:300],
+                    "date": "",
+                    "agency": room.get("abbreviation", "")[:120],
+                    "office": room.get("title", "")[:200],
+                    "notice_type": "FOIA reading room",
+                }
+                n += 1
+                if limit and n >= limit:
+                    return
+
+    def fetch(self, rec: dict) -> tuple[bytes, str]:
+        self._wait(rec["url"])
+        r = self.session.get(rec["url"], timeout=240, allow_redirects=True)
+        r.raise_for_status()
+        name = urllib.parse.unquote(rec["url"].rstrip("/").split("/")[-1].split("?")[0])
+        return r.content, name or "document.pdf"

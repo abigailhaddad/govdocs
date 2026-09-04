@@ -47,6 +47,14 @@ ignores it, returning the same total either way — a filter there would look li
 it worked and do nothing. Volume is bounded by notice type and date window,
 which the API does honour.
 
+`foia_rooms` walks the reading rooms listed in api.foia.gov's own component
+directory: 615 FOIA offices, 311 reading rooms, 223 distinct hosts. Their
+layouts have nothing in common, so it does not parse them -- it takes every
+document link on a reading-room page and follows same-host links that look like
+further listings one level deep. Crude, but it works everywhere and degrades to
+finding nothing rather than breaking. robots.txt is honoured per host and every
+host gets its own rate limiter.
+
 `oversight` reads oversight.gov's api/v2/reports, the government-wide feed of
 Inspector General work. One call covers 47 OIGs. It ignores pagination —
 `page`, `offset` and `items_per_page` all return the same 1,063 rows — so it is
