@@ -93,6 +93,9 @@ class FoiaRooms:
         self.calls = 0
         self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
         self._last_hit: dict[str, float] = {}
+        self._pw = None            # playwright driver, started only if needed
+        self._browser = None
+        self._page = None
 
     def _allowed(self, url: str) -> bool:
         host = urllib.parse.urlsplit(url).netloc
@@ -119,19 +122,49 @@ class FoiaRooms:
             time.sleep(gap)
         self._last_hit[host] = time.monotonic()
 
+    def _browser_get(self, url: str) -> str | None:
+        """Fetch a listing page with a real browser.
+
+        Started lazily and reused: launching one per page would be slower than
+        the sites are. Only listing pages come through here; documents download
+        over plain HTTP.
+        """
+        if self._page is None:
+            try:
+                from playwright.sync_api import sync_playwright
+            except ImportError:
+                return None
+            self._pw = sync_playwright().start()
+            # headless=False matters. Headless chromium gets "Access Denied"
+            # from justice.gov; the same launch headed returns the page. The
+            # wall reads the browser, not the IP or the rate.
+            self._browser = self._pw.chromium.launch(headless=False)
+            self._page = self._browser.new_page()
+        try:
+            self._page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            return self._page.content()
+        except Exception:
+            return None
+
+    def close(self) -> None:
+        for obj, meth in ((self._browser, "close"), (self._pw, "stop")):
+            try:
+                if obj is not None:
+                    getattr(obj, meth)()
+            except Exception:
+                pass
+        self._pw = self._browser = self._page = None
+
     def _get(self, url: str) -> str | None:
         if self.calls >= self.max_calls or not self._allowed(url):
             return None
         prof = for_url(url)
         self._wait(url)
         self.calls += 1
+        if prof and prof.fetch_mode == "browser":
+            return self._browser_get(url)
         try:
-            if prof and prof.via_proxy and os.environ.get("SCRAPERAPI_KEY"):
-                r = self.session.get(
-                    "https://api.scraperapi.com/", timeout=180,
-                    params={"api_key": os.environ["SCRAPERAPI_KEY"], "url": url})
-            else:
-                r = self.session.get(url, timeout=60)
+            r = self.session.get(url, timeout=60)
         except requests.RequestException:
             return None
         if r.status_code != 200:

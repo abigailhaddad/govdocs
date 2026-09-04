@@ -33,11 +33,16 @@ class Profile:
     # Extra link shape to treat as a document beyond the usual extensions.
     doc_re: re.Pattern | None = None
     per_second: float = 0.5
-    # Some agencies serve their front page happily and 403 every paginated
-    # request, browser headers and all. Those hosts are fetched through
-    # ScraperAPI. It costs credits per request, so it is opt-in per host rather
-    # than a global fallback.
-    via_proxy: bool = False
+    # "browser" drives a real, HEADED browser for LISTING pages. Headless is
+    # not enough: headless chromium gets "Access Denied" from justice.gov and
+    # the same launch headed returns the page, so the wall is reading the
+    # browser rather than the address or the rate. Some agencies serve
+    # their front page to anything and 403 every paginated request, browser
+    # User-Agent, Accept, Accept-Language and Referer included. A real browser
+    # clears it and costs nothing, so reach for this before any paid unblocker.
+    # Document URLs are still fetched over plain HTTP -- only the listings are
+    # gated -- which keeps the browser out of the download path entirely.
+    fetch_mode: str = "direct"
     notes: str = ""
 
 
@@ -53,10 +58,13 @@ PROFILES: dict[str, Profile] = {
             r'<a href="(/[^"]*?/media/\d+/dl)"[^>]*>\s*'
             r'(?:<span[^>]*>)?\s*([^<]{4,300}?)\s*(?:</span>)?\s*</a>', re.I | re.S),
         doc_re=re.compile(r"/media/\d+/dl"),
-        via_proxy=True,
+        fetch_mode="browser",
         notes=("OLC alone: 1,453 opinions over 146 pages, 11 per page. The front "
                "page serves fine but ?page=N returns 403 to any direct request, "
-               "browser headers included, so DOJ is fetched through a proxy."),
+               "browser headers included. A headed browser clears it; headless "
+               "gets Access Denied. The "
+               "/media/<id>/dl document URLs are NOT gated and fetch over plain "
+               "HTTP at full speed."),
     ),
     "www.uscis.gov": Profile(
         host="www.uscis.gov",
