@@ -114,7 +114,6 @@ jobs:
           CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
           CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -m govdocs.collect --publish sam
           python -m govdocs.collect --publish foia
