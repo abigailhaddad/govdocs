@@ -93,6 +93,40 @@ def check_limit_counts_collected() -> None:
           f"seen-check at {seen_at}, limit break at {break_at}")
 
 
+def check_transient_errors_retry() -> None:
+    """A 502 must not permanently blacklist a document.
+
+    Failed attempts used to count as seen, so govinfo's content-tier outage
+    wrote 1,634 packages to seen.jsonl as errors and no later run would have
+    retried any of them -- a silent hole in the corpus.
+    """
+    import json, tempfile, os
+    from pathlib import Path as _P
+    sample = [
+        {"key": "s/collected_0", "doc_id": "collected_0", "sha256": "a"},
+        {"key": "s/dupe_0", "sha256": "a", "duplicate": True},
+        {"key": "s/gone_0", "error": "fetch: 404 Client Error: Not Found"},
+        {"key": "s/toobig_0", "error": "empty or too large"},
+        {"key": "s/blip_0", "error": "fetch: 502 Server Error: Bad Gateway"},
+        {"key": "s/slow_0", "error": "fetch: HTTPSConnectionPool read timeout"},
+    ]
+    fd, path = tempfile.mkstemp(suffix=".jsonl"); os.close(fd)
+    _P(path).write_text("\n".join(json.dumps(r) for r in sample))
+    orig = collect.SEEN
+    try:
+        collect.SEEN = _P(path)
+        keys, _ = collect._seen()
+    finally:
+        collect.SEEN = orig
+        os.unlink(path)
+    check("collected and permanently-gone documents count as seen",
+          {"s/collected_0", "s/dupe_0", "s/gone_0", "s/toobig_0"} <= keys,
+          f"missing from seen: {{'s/collected_0','s/dupe_0','s/gone_0','s/toobig_0'}} - {keys}")
+    retried = {"s/blip_0", "s/slow_0"} & keys
+    check("5xx and timeouts stay retryable", not retried,
+          f"wrongly marked seen: {sorted(retried)}")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -100,6 +134,7 @@ def main() -> int:
     check_datasets_have_cards()
     check_cli_args_exist()
     check_limit_counts_collected()
+    check_transient_errors_retry()
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nall passed")
     return 1 if FAILURES else 0
 

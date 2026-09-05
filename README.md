@@ -65,7 +65,11 @@ useful before Hugging Face was the destination, and keeping both means paying to
 store the same bytes twice.
 
 `data/seen.jsonl` records every attempt, including failures and duplicates, and
-is what stops a rerun re-fetching the archive.
+is what stops a rerun re-fetching the archive. Only settled outcomes close the
+door, though: a document collected, a duplicate recognised, or a 404. A 502 or a
+timeout stays retryable, because govinfo returned 502 for 1,634 packages during
+one content-tier outage and treating those as done would have left a hole in the
+corpus with nothing to show it was there.
 
 ## What is collected, and what is not
 

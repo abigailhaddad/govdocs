@@ -61,8 +61,24 @@ EXT_CONTENT_TYPE = {
 }
 
 
+# A failure that will still be a failure next time. Anything else -- 5xx,
+# timeouts, dropped connections -- is worth another go on a later run.
+PERMANENT_ERROR = re.compile(r"\b(404|410)\b|empty or too large", re.I)
+
+
 def _seen() -> tuple[set[str], set[str]]:
-    """Keys and content hashes already collected."""
+    """Keys not worth trying again, and content hashes already held.
+
+    A failed attempt used to count as seen, which meant one bad afternoon was
+    permanent: govinfo returned 502 for 1,634 packages during a content-tier
+    outage, every one of them was written to seen.jsonl, and no later run would
+    ever have retried them. The corpus would have carried a hole with nothing to
+    show it was there.
+
+    So only settled outcomes count -- a document collected, a duplicate
+    recognised, or an error that says the thing is genuinely gone. The log still
+    records every attempt; this is only about which of them close the door.
+    """
     keys, hashes = set(), set()
     if SEEN.exists():
         for line in SEEN.read_text().splitlines():
@@ -70,7 +86,11 @@ def _seen() -> tuple[set[str], set[str]]:
                 row = json.loads(line)
             except Exception:
                 continue
-            keys.add(row.get("key", ""))
+            err = row.get("error") or ""
+            settled = (row.get("doc_id") or row.get("duplicate")
+                       or (err and PERMANENT_ERROR.search(err)))
+            if settled and row.get("key"):
+                keys.add(row["key"])
             if row.get("sha256"):
                 hashes.add(row["sha256"])
     return keys, hashes
