@@ -221,3 +221,20 @@ calls, that every source's collection has a dataset and a card, and that every
 argument `main()` reads is one the parser actually defines -- `--r2` was read
 and never defined, so every collection run died with AttributeError while
 publishing, which returns earlier, kept working.
+
+## Resuming after an outage
+
+    ./resume.sh
+
+Collects one round if -- and only if -- the source is actually answering. It
+probes a known-good PDF rather than the homepage, because govinfo's content
+tier returns 502 for hours at a time while its sitemaps and homepage stay at
+200; "the site is up" is not the question, "does a document download" is. It
+also refuses to run with less than 5 GiB free.
+
+Meant for cron:
+
+    0 */2 * * * /path/to/govdocs/resume.sh
+
+Safe to run more often than necessary: the collector skips what it already has,
+and stops itself if the host dies partway through. It logs to `data/resume.log`.
