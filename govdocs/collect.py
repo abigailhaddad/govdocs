@@ -24,19 +24,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import tempfile
 import time
 from pathlib import Path
 
 from . import publish, store
-from .sources.documentcloud import DocumentCloud
+from .agencies import canonical
 from .sources.foia_rooms import FoiaRooms
 from .sources.governmentattic import GovernmentAttic
 from .sources.oversight import Oversight
 from .sources.sam import Sam
 
-SOURCES = {"documentcloud": DocumentCloud, "foia_rooms": FoiaRooms,
+SOURCES = {"foia_rooms": FoiaRooms,
            "governmentattic": GovernmentAttic, "oversight": Oversight, "sam": Sam}
 
 SEEN = Path("data/seen.jsonl")
@@ -78,13 +79,27 @@ def _record(row: dict) -> None:
         fh.write(json.dumps(row, default=str) + "\n")
 
 
-def _page_count(path: Path) -> int:
+def _pdf_facts(path: Path) -> tuple[int, str]:
+    """Page count and creation date, read in one open.
+
+    Reading rooms list documents without dates -- every one of the 2,126
+    collected came back blank -- but the PDF itself usually carries a
+    CreationDate. It is not authoritative (re-exporting an old file restamps
+    it), which is why it is only used when the listing gave nothing.
+    """
     try:
         import pymupdf
         with pymupdf.open(path) as d:
-            return d.page_count
+            meta = d.metadata or {}
+            m = re.search(r"D:(\d{4})(\d{2})(\d{2})", meta.get("creationDate") or "")
+            made = ""
+            if m:
+                y, mo, dy = (int(x) for x in m.groups())
+                if 1990 <= y <= 2100 and 1 <= mo <= 12 and 1 <= dy <= 31:
+                    made = f"{y:04d}-{mo:02d}-{dy:02d}"
+            return d.page_count, made
     except Exception:
-        return 0
+        return 0, ""
 
 
 def collect(source_name: str, since: str, limit: int, max_calls: int,
@@ -136,7 +151,9 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
         staged.mkdir(parents=True, exist_ok=True)
         out = staged / f"{doc_id}{ext}"
         out.write_bytes(data)
-        pages = _page_count(out) if ext == ".pdf" else 0
+        pages, pdf_date = (_pdf_facts(out) if ext == ".pdf" else (0, ""))
+        if not (rec.get("date") or "").strip():
+            rec["date"] = pdf_date
 
         _record({"key": key, "sha256": digest, "r2_key": r2_key,
                  "doc_id": doc_id, "ext": ext, "bytes": len(data),
@@ -244,7 +261,11 @@ def build_metadata(collection: str, out_dir: Path) -> Path:
             if True:
                 rows.append({
                     "doc_id": r["doc_id"], "source": r.get("source", ""),
-                    "title": r.get("title", ""), "agency": r.get("agency", ""),
+                    "title": r.get("title", ""),
+                    # One spelling per agency for filtering, and the collected
+                    # value beside it so nothing is lost to a bad guess.
+                    "agency": canonical(r.get("agency", "")),
+                    "agency_raw": r.get("agency", ""),
                     "office": r.get("office", ""), "notice_type": r.get("notice_type", ""),
                     "posted_date": r.get("date", ""), "url": r.get("url", ""),
                     "landing_url": r.get("landing_url", ""),

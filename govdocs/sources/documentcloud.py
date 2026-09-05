@@ -1,18 +1,21 @@
-"""documentcloud.py — FOIA releases as the people who requested them uploaded them.
+"""documentcloud.py -- NOT IN USE. Kept for the record.
 
-Reading rooms hold what agencies are obliged to post: the four categories in
-5 U.S.C. 552(a)(2), plus records already requested three or more times. A
-one-off release to a journalist or a researcher goes to that person and nowhere
-else, which is most of what FOIA actually produces.
+DocumentCloud is run by MuckRock. Its documents are US government works and
+carry no copyright, and the search API is open, so pulling 455,000 of them was
+technically easy and legally unobstructed.
 
-DocumentCloud is where a lot of it ends up. 455,300 public documents match
-"foia" alone, uploaded by the newsrooms that received them, with no obligation
-filtering what appears. Its search API needs no credentials for public
-documents.
+It is still the wrong thing to do. MuckRock is a nonprofit whose value is being
+the place these documents live, and the people who uploaded them did the work of
+requesting, receiving and posting them. Their API exists for managing your own
+documents and building tools on top, not for copying their corpus onto another
+host. The same goes for the FOIAonline archive they and POGO rescued when that
+system was shut down.
 
-Queries name the kinds of release worth having rather than sweeping everything:
-the corpus is mostly newsroom working material, and an untargeted crawl would
-bring back court filings and press clippings alongside the releases.
+This archive collects from the government. Where someone else has already done
+the collecting, the right move is to link to them.
+
+The code below is left unregistered so the reasoning is on the record rather
+than rediscovered.
 """
 
 from __future__ import annotations

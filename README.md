@@ -141,10 +141,19 @@ documents.
 
 PDFs are files rather than parquet binary columns, so they stay directly
 downloadable. Hugging Face gets slow past roughly 100k files in a repo, so
-documents are foldered by source and `metadata.parquet` is what you query:
-doc_id, source, agency, office, title, notice type, posted date, source URL,
-landing URL, filename, byte size, page count, and a SHA-256 of the original
-bytes.
+documents are foldered by source and `metadata.parquet` is what you query: doc_id, source, agency, agency_raw,
+office, title, notice type, posted date, source URL, landing URL, filename,
+byte size, page count, and a SHA-256 of the original bytes.
+
+`agency` is one spelling per body, so a filter finds everything: SAM says "DEPT
+OF DEFENSE", the FOIA directory says "DoD", oversight.gov says "Department of
+War", and a reading room says "SOL" meaning Interior's Solicitor. `agency_raw`
+keeps what the source actually said, because a canonicaliser that guesses wrong
+files a document under the wrong department and says nothing about it.
+
+`posted_date` comes from the listing where there is one. Reading rooms give
+none -- all 2,126 came back blank -- so the PDF's own CreationDate is used as a
+fallback. It is not authoritative: re-exporting a 2017 file in 2026 restamps it.
 
 Files are byte-identical to what the agency published. Nothing is converted,
 recompressed or edited.
