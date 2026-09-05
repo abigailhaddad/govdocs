@@ -31,6 +31,7 @@ from .sources.sam import Sam
 SOURCES = {"foia_rooms": FoiaRooms, "oversight": Oversight, "sam": Sam}
 
 SEEN = Path("data/seen.jsonl")
+PUBLISHED = Path("data/published.jsonl")
 MAX_BYTES = 200 * 1024 * 1024
 
 # How many documents to hold on disk at once while publishing. 300 averages a
@@ -148,11 +149,27 @@ def _rows_for(collection: str) -> list[dict]:
     return rows
 
 
+def _published() -> set[str]:
+    if not PUBLISHED.exists():
+        return set()
+    return {l.strip() for l in PUBLISHED.read_text().splitlines() if l.strip()}
+
+
 def publish_collection(collection: str) -> str:
-    """Stream the archive out of R2 and into Hugging Face, a batch at a time."""
+    """Stream documents that have not been pushed yet into Hugging Face.
+
+    Only what is new. A daily job that re-uploaded the archive every run would
+    spend hours moving bytes that are already there and would eventually exceed
+    any CI time limit.
+    """
     s3 = store.client()
-    rows = _rows_for(collection)
+    done = _published()
+    rows = [r for r in _rows_for(collection) if r["r2_key"] not in done]
+    total_known = len(_rows_for(collection))
+    print(f"{len(rows)} new of {total_known} in {collection}")
     repo_id = publish.ensure_dataset(collection)
+    if not rows:
+        return repo_id
 
     meta_dir = Path(tempfile.mkdtemp(prefix="govdocs-meta-"))
     build_metadata(collection, meta_dir)
@@ -174,6 +191,10 @@ def publish_collection(collection: str) -> str:
             publish.upload_folder(
                 collection, work,
                 f"Add documents {start + 1}-{start + len(chunk)}")
+            PUBLISHED.parent.mkdir(parents=True, exist_ok=True)
+            with PUBLISHED.open("a") as fh:
+                for r in chunk:
+                    fh.write(r["r2_key"] + "\n")
             print(f"  uploaded {start + len(chunk)}/{len(rows)}", flush=True)
         finally:
             shutil.rmtree(work, ignore_errors=True)

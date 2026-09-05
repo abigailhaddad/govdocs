@@ -46,9 +46,23 @@ jobs:
         with:
           path: |
             data/seen.jsonl
+            data/published.jsonl
             data/reading_rooms.json
           key: govdocs-state-${{ github.run_id }}
           restore-keys: govdocs-state-
+
+      - name: Check the runner can reach the gated sites
+        # GitHub runs on datacenter addresses and some agencies treat those
+        # differently from a home connection. This was verified from a
+        # residential IP; if a site refuses the runner, this step says so
+        # plainly instead of the crawl quietly returning nothing.
+        run: |
+          for u in https://www.justice.gov/olc/opinions \
+                   https://api.foia.gov/api/agency_components?api_key=DEMO_KEY \
+                   https://www.oversight.gov/api/v2/reports; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$u" || echo 000)
+            echo "$code  $u"
+          done
 
       - name: Collect
         env:
