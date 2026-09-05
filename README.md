@@ -55,6 +55,20 @@ further listings one level deep. Crude, but it works everywhere and degrades to
 finding nothing rather than breaking. robots.txt is honoured per host and every
 host gets its own rate limiter.
 
+### Hosts that refuse
+
+About a third of federal FOIA hosts answer a plain request with 403 -- 33 of the
+first 112 probed, including ATF, DEA, FAA, FCC, FERC, DoD IG and most .mil
+sites. A headed browser gets through where nothing else does, so rather than
+writing seventy profiles that all say the same thing, the crawler notices the
+refusal and switches that host to a browser for the rest of the run.
+
+Two things made this invisible for a while. `RobotFileParser.read()` treats a
+403 on robots.txt as disallow-all, and these hosts refuse robots.txt too, so a
+site that blocked our fetcher looked like a site that forbade crawling. And
+headless is not enough: headless chromium gets "Access Denied" where the same
+launch headed returns the page.
+
 ### Adding a department
 
 `govdocs/sources/profiles.py` holds what is known about individual agencies:

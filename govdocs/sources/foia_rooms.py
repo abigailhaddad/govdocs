@@ -96,6 +96,12 @@ class FoiaRooms:
         self._pw = None            # playwright driver, started only if needed
         self._browser = None
         self._page = None
+        # Hosts that answered a plain request with a refusal. Roughly a third of
+        # federal FOIA hosts do -- 33 of the first 112 probed, including ATF,
+        # DEA, FAA, FCC, FERC, DoD IG and most .mil sites. Writing a profile for
+        # each would be seventy entries of the same fact, so the refusal is
+        # simply noticed and the host switched to a browser from then on.
+        self._needs_browser: set[str] = set()
 
     def _allowed(self, url: str) -> bool:
         """Does this host's robots.txt permit the URL?
@@ -176,12 +182,18 @@ class FoiaRooms:
         prof = for_url(url)
         self._wait(url)
         self.calls += 1
-        if prof and prof.fetch_mode == "browser":
+        host = urllib.parse.urlsplit(url).netloc
+        if (prof and prof.fetch_mode == "browser") or host in self._needs_browser:
             return self._browser_get(url)
         try:
             r = self.session.get(url, timeout=60)
         except requests.RequestException:
             return None
+        if r.status_code in (401, 403, 503):
+            # Not a refusal to be crawled, just a refusal to be crawled by this.
+            # A browser gets through, so remember the host and use one.
+            self._needs_browser.add(host)
+            return self._browser_get(url)
         if r.status_code != 200:
             return None
         if "html" not in r.headers.get("content-type", "") and "<html" not in r.text[:400].lower():
