@@ -7,11 +7,17 @@ Collection and publication are separate steps on purpose. Fetching is slow and
 rate-limited and wants to run often in small bites; pushing to Hugging Face is a
 single large commit and wants to run rarely.
 
-R2 is the only copy. Nothing accumulates on disk: a document is held just long
-enough to count its pages, then written to R2 and deleted. Publishing streams
-back out of R2 in batches, so peak local use is one batch rather than the whole
-archive -- which matters when the archive is tens of gigabytes and the laptop is
-not.
+Hugging Face is the store. Documents are staged in batches and pushed as a
+single commit each, then deleted locally, so peak disk is one batch rather than
+the whole archive -- which matters when the archive is heading for a hundred
+gigabytes and the laptop is not.
+
+One commit per batch, never per file: a commit carrying five hundred documents
+costs the API about what a commit carrying one does, and the limits are on
+requests rather than bytes.
+
+R2 is optional and off by default. It was useful while Hugging Face was not yet
+the destination; keeping both means paying to store the same bytes twice.
 """
 
 from __future__ import annotations
@@ -32,11 +38,12 @@ SOURCES = {"foia_rooms": FoiaRooms, "oversight": Oversight, "sam": Sam}
 
 SEEN = Path("data/seen.jsonl")
 PUBLISHED = Path("data/published.jsonl")
+STAGE = Path("data/stage")
 MAX_BYTES = 200 * 1024 * 1024
 
 # How many documents to hold on disk at once while publishing. 300 averages a
 # few hundred megabytes and keeps each Hugging Face commit a sane size.
-BATCH = 300
+BATCH = 500          # documents per commit
 
 EXT_CONTENT_TYPE = {
     ".pdf": "application/pdf",
@@ -77,10 +84,13 @@ def _page_count(path: Path) -> int:
         return 0
 
 
-def collect(source_name: str, since: str, limit: int, max_calls: int) -> None:
+def collect(source_name: str, since: str, limit: int, max_calls: int,
+            use_r2: bool = False) -> None:
     store.load_env()
-    s3 = store.client()
-    store.ensure_bucket(s3)
+    s3 = None
+    if use_r2:
+        s3 = store.client()
+        store.ensure_bucket(s3)
     src = SOURCES[source_name](max_calls=max_calls)
     collection = src.collection
 
@@ -114,16 +124,16 @@ def collect(source_name: str, since: str, limit: int, max_calls: int) -> None:
         ext = Path(filename).suffix.lower() or ".pdf"
         doc_id = f"{rec['notice_id']}_{rec['index']}"
         r2_key = f"{source_name}/{doc_id}{ext}"
-        store.put(s3, r2_key, data, EXT_CONTENT_TYPE.get(ext, "application/octet-stream"))
+        if s3 is not None:
+            store.put(s3, r2_key, data,
+                      EXT_CONTENT_TYPE.get(ext, "application/octet-stream"))
 
-        # Held only long enough to read the page count, then removed. R2 is the
-        # copy that matters and disk here is not free.
-        pages = 0
-        if ext == ".pdf":
-            tmp = scratch / f"{doc_id}{ext}"
-            tmp.write_bytes(data)
-            pages = _page_count(tmp)
-            tmp.unlink(missing_ok=True)
+        # Staged for the next commit, and removed once it lands.
+        staged = STAGE / collection / "documents" / source_name
+        staged.mkdir(parents=True, exist_ok=True)
+        out = staged / f"{doc_id}{ext}"
+        out.write_bytes(data)
+        pages = _page_count(out) if ext == ".pdf" else 0
 
         _record({"key": key, "sha256": digest, "r2_key": r2_key,
                  "doc_id": doc_id, "ext": ext, "bytes": len(data),
@@ -131,9 +141,29 @@ def collect(source_name: str, since: str, limit: int, max_calls: int) -> None:
                  "filename": filename, "collection": collection, **rec})
         got += 1
 
+        staged_dir = STAGE / collection / "documents" / source_name
+        if len(list(staged_dir.glob("*"))) >= BATCH:
+            _flush(collection, got)
+
     shutil.rmtree(scratch, ignore_errors=True)
+    _flush(collection, got)
     print(f"collected {got} documents in {time.time()-t0:.0f}s "
           f"({dupes} duplicate files skipped, {src.calls} search calls)")
+
+
+def _flush(collection: str, n_so_far: int) -> None:
+    """Push whatever is staged, then clear it."""
+    root = STAGE / collection
+    files = [p for p in root.rglob("*") if p.is_file()]
+    if not files:
+        return
+    meta_dir = root
+    build_metadata(collection, meta_dir)
+    publish.ensure_dataset(collection)
+    publish.upload_folder(collection, root,
+                          f"Add {len(files)} documents ({time.strftime('%Y-%m-%d')})")
+    print(f"  pushed {len(files)} files ({n_so_far} collected so far)", flush=True)
+    shutil.rmtree(root, ignore_errors=True)
 
 
 def _rows_for(collection: str) -> list[dict]:
@@ -242,7 +272,7 @@ def main() -> None:
         repo = publish_collection(a.publish)
         print(f"published to https://huggingface.co/datasets/{repo}")
         return
-    collect(a.source, a.since, a.limit, a.max_calls)
+    collect(a.source, a.since, a.limit, a.max_calls, use_r2=a.r2)
 
 
 if __name__ == "__main__":

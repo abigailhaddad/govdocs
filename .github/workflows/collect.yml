@@ -74,6 +74,7 @@ jobs:
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
           CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
           CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           SAM_API_KEY: ${{ secrets.SAM_API_KEY }}
           DATAGOV_API_KEY: ${{ secrets.DATAGOV_API_KEY }}
         run: python -m govdocs.collect --source sam --since 2025-01-20 --limit 4000 --max-calls 120
@@ -85,6 +86,7 @@ jobs:
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
           CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
           CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python -m govdocs.collect --source oversight --since 2015-01-01 --limit 3000
 
       - name: Collect from FOIA reading rooms
@@ -94,6 +96,7 @@ jobs:
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
           CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
           CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           DATAGOV_API_KEY: ${{ secrets.DATAGOV_API_KEY }}
         # About a third of federal FOIA hosts refuse anything but a browser, and
         # headless is refused too. xvfb gives a screenless runner a display.
@@ -101,13 +104,16 @@ jobs:
           xvfb-run -a python -m govdocs.collect \
             --source foia_rooms --since 2025-01-20 --limit 6000 --max-calls 2500
 
-      - name: Publish
-        if: ${{ github.event_name == 'schedule' || inputs.publish }}
+      # Collection pushes as it goes, one commit per batch. This step only
+      # matters when documents are held in R2 and pushed separately.
+      - name: Publish from R2
+        if: ${{ false }}
         env:
           CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
           CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
           CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -m govdocs.collect --publish sam

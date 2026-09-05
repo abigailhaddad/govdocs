@@ -124,8 +124,27 @@ def ensure_dataset(collection: str) -> str:
 
 
 def upload_folder(collection: str, local_dir: Path, message: str) -> str:
+    """Push a staged batch as ONE commit.
+
+    One commit per batch, never per file. A commit carrying five hundred
+    documents costs the API roughly what a commit carrying one does, and the
+    rate limits are on requests rather than bytes.
+    """
     repo_id = DATASETS[collection]
-    a = api()
-    a.upload_folder(folder_path=str(local_dir), repo_id=repo_id,
-                    repo_type="dataset", commit_message=message)
+    api().upload_folder(folder_path=str(local_dir), repo_id=repo_id,
+                        repo_type="dataset", commit_message=message)
+    return repo_id
+
+
+def upload_large(collection: str, local_dir: Path) -> str:
+    """Push a large staged tree, resumably.
+
+    upload_large_folder chunks the work, parallelises it and keeps its own
+    progress, so an interrupted upload of tens of thousands of files resumes
+    instead of starting again. Worth it above a few thousand files; below that
+    upload_folder is simpler and makes a cleaner history.
+    """
+    repo_id = DATASETS[collection]
+    api().upload_large_folder(folder_path=str(local_dir), repo_id=repo_id,
+                              repo_type="dataset")
     return repo_id

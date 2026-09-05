@@ -35,9 +35,21 @@ Collecting and publishing are separate. Collecting is slow and rate-limited and
 should run often in small bites; publishing is one large commit and should run
 rarely.
 
-R2 is the system of record. `data/stage/` is a disposable view of what has not
-been pushed yet, so an interrupted upload costs bandwidth and nothing else.
-`data/seen.jsonl` records every attempt, including failures and duplicates.
+Hugging Face is the store. Documents are staged in batches of 500 and pushed as
+a single commit each, then deleted locally, so peak disk is one batch rather
+than the whole archive -- which matters when the archive is heading for a
+hundred gigabytes.
+
+One commit per batch, never per file: a commit carrying five hundred documents
+costs the API about what a commit carrying one does, and the limits are on
+requests rather than bytes.
+
+`--r2` additionally keeps a copy in object storage. Off by default; it was
+useful before Hugging Face was the destination, and keeping both means paying to
+store the same bytes twice.
+
+`data/seen.jsonl` records every attempt, including failures and duplicates, and
+is what stops a rerun re-fetching the archive.
 
 ## Sources
 
