@@ -106,7 +106,7 @@ def api():
     from huggingface_hub import HfApi
     token = os.environ.get("HF_TOKEN")
     if not token:
-        raise SystemExit("HF_TOKEN is not set; it lives in opm/.env")
+        raise SystemExit("HF_TOKEN is not set. Put a write token in .env or the environment.")
     return HfApi(token=token)
 
 

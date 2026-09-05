@@ -43,7 +43,7 @@ class Sam:
 
     def __init__(self, max_calls: int = 200, ptypes: tuple[str, ...] = ALL_PTYPES):
         if not os.environ.get("SAM_API_KEY"):
-            raise SystemExit("SAM_API_KEY is not set; it lives in pull_usaspending/.env")
+            raise SystemExit("SAM_API_KEY is not set. Get a free key at https://api.data.gov/signup/")
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
         self.max_calls = max_calls
