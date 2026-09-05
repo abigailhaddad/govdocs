@@ -1,0 +1,96 @@
+name: collect
+
+# Collect new documents and mirror them to Hugging Face.
+#
+# Secrets this needs:
+#   CF_R2_ACCOUNT_ID, CF_R2_ACCESS_KEY_ID, CF_R2_SECRET_ACCESS_KEY, CF_R2_BUCKET
+#   SAM_API_KEY        api.data.gov key for the SAM Opportunities API
+#   DATAGOV_API_KEY    api.data.gov key, used to read the FOIA component directory
+#   HF_TOKEN           write token for the datasets
+
+on:
+  schedule:
+    - cron: "17 6 * * *"      # daily, a bit after the SAM quota resets at midnight UTC
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Push to Hugging Face after collecting"
+        type: boolean
+        default: true
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          pip install --quiet boto3 requests huggingface_hub pymupdf pyarrow playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Restore collection state
+        # seen.jsonl is what stops every run re-fetching the whole archive. It
+        # is small, and caching it is enough: R2 holds the documents, so a cache
+        # miss costs bandwidth rather than data.
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/seen.jsonl
+            data/reading_rooms.json
+          key: govdocs-state-${{ github.run_id }}
+          restore-keys: govdocs-state-
+
+      - name: Collect
+        env:
+          CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
+          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
+          SAM_API_KEY: ${{ secrets.SAM_API_KEY }}
+          DATAGOV_API_KEY: ${{ secrets.DATAGOV_API_KEY }}
+        run: |
+          python -m govdocs.collect --source sam --since 2025-01-20 --limit 4000 --max-calls 120
+          python -m govdocs.collect --source oversight --since 2025-01-20 --limit 900
+          # Some agencies serve their front page to anything and 403 every
+          # paginated request; only a HEADED browser gets through, and headless
+          # is refused outright. xvfb gives the runner a display so headed works
+          # on a machine with no screen.
+          xvfb-run -a python -m govdocs.collect \
+            --source foia_rooms --since 2025-01-20 --limit 6000 --max-calls 2500
+
+      - name: Publish
+        if: ${{ github.event_name == 'schedule' || inputs.publish }}
+        env:
+          CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
+          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m govdocs.collect --publish sam
+          python -m govdocs.collect --publish foia
+
+      - name: Summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, collections, pathlib
+          p = pathlib.Path("data/seen.jsonl")
+          rows = [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
+          ok = [r for r in rows if r.get("doc_id")]
+          by = collections.Counter(r.get("source") for r in ok)
+          gb = sum(r.get("bytes", 0) for r in ok) / 1e9
+          print(f"## Collected\n\n{len(ok)} documents, {gb:.2f} GB\n")
+          for k, v in by.most_common():
+              print(f"- {k}: {v}")
+          PY

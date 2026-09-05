@@ -78,6 +78,23 @@ Inspector General work. One call covers 47 OIGs. It ignores pagination —
 `page`, `offset` and `items_per_page` all return the same 1,063 rows — so it is
 a rolling window of recent reports and coverage grows by running it regularly.
 
+## Running it on a schedule
+
+`.github/workflows/collect.yml` collects daily and pushes to Hugging Face.
+
+It needs seven secrets: the four `CF_R2_*` values, `SAM_API_KEY`,
+`DATAGOV_API_KEY` (both api.data.gov keys) and `HF_TOKEN`.
+
+The one non-obvious bit is `xvfb-run` around the reading-room step. Some
+agencies serve their front page to anything and 403 every paginated request;
+only a headed browser gets through and headless is refused outright, so the
+runner needs a virtual display to run a headed browser on a machine with no
+screen.
+
+`data/seen.jsonl` is cached between runs. It is what stops each run re-fetching
+the archive; a cache miss costs bandwidth rather than data, since R2 holds the
+documents.
+
 ## Layout in each dataset
 
     documents/<source>/<doc_id>.pdf
