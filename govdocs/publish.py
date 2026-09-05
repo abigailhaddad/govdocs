@@ -2,8 +2,9 @@
 
 Two collections, two datasets, one codebase:
 
-    sam    -> abigailhaddad/sam-solicitation-documents
-    foia   -> abigailhaddad/foia-reading-room-documents
+    sam     -> abigailhaddad/sam-solicitation-documents
+    foia    -> abigailhaddad/foia-reading-room-documents
+    govinfo -> abigailhaddad/govinfo-documents
 
 They are kept separate because they are different things. Solicitation
 attachments are working procurement paperwork; FOIA library documents are
@@ -31,6 +32,10 @@ from pathlib import Path
 DATASETS = {
     "sam": "abigailhaddad/sam-solicitation-documents",
     "foia": "abigailhaddad/foia-reading-room-documents",
+    # govinfo is neither: congressional hearings and GAO reports are published
+    # outright, not released on request, so filing them under a FOIA dataset
+    # would mislabel every row.
+    "govinfo": "abigailhaddad/govinfo-documents",
 }
 
 CARD = """---
@@ -93,12 +98,20 @@ BLURBS = {
         "Documents from federal FOIA reading rooms and Inspector General report "
         "libraries: audits, inspections, investigative summaries and records "
         "released under the Freedom of Information Act."),
+    "govinfo": (
+        "Documents published by the Government Publishing Office on govinfo.gov: "
+        "congressional hearings, committee reports and prints, congressional "
+        "documents, GAO reports, agency publications and presidential documents, "
+        "as PDFs byte-identical to GPO's own."),
 }
 
 PROVENANCE = {
     "sam": "Collected from the SAM.gov Opportunities API and the attachment URLs it returns.",
     "foia": ("Collected from agency FOIA libraries and Office of Inspector General "
              "report listings, following each site's robots.txt."),
+    "govinfo": ("Collected from the per-collection sitemaps GPO publishes on "
+                "govinfo.gov, following its robots.txt. No API key is involved: "
+                "the sitemap and content paths take none."),
 }
 
 

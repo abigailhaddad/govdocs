@@ -11,9 +11,14 @@ Two collections, published as two datasets:
   statements, justifications, amendments, wage determinations.
 - `abigailhaddad/foia-reading-room-documents` — Inspector General reports and
   FOIA reading room records.
+- `abigailhaddad/govinfo-documents` — what GPO publishes on govinfo.gov:
+  congressional hearings, committee reports and prints, congressional
+  documents, GAO reports, agency publications and presidential documents.
 
-They are separate because they are different things and people want one or the
-other, not both.
+They are separate because they are different things and people want one, not
+all three. govinfo in particular is not a FOIA corpus: these documents are
+published outright rather than released on request, and filing them under a
+FOIA dataset would mislabel every row.
 
 ## Why
 
@@ -28,12 +33,23 @@ means you can look at ten thousand documents instead of one.
 
     python -m govdocs.collect --source sam --since 2025-01-20 --limit 500
     python -m govdocs.collect --source oversight --since 2025-01-20
+    python -m govdocs.collect --source govinfo --since 2020-01-01 --limit 500
     python -m govdocs.collect --publish sam
     python -m govdocs.collect --publish foia
 
 Collecting and publishing are separate. Collecting is slow and rate-limited and
 should run often in small bites; publishing is one large commit and should run
 rarely.
+
+`--limit` counts documents actually collected, not records discovered, so the
+same command run repeatedly keeps making progress instead of re-walking the
+records it already has. `data/seen.jsonl` is what it checks against. Discovery
+itself is unbounded and `--max-calls` bounds the paging.
+
+govinfo documents are large -- congressional hearings average around 20 MB
+against one or two for the other sources -- so `BATCH` documents stage to disk
+before the first push frees anything. Keep `--limit` well under `BATCH` there,
+or lower `BATCH`, unless there is room for the whole batch at once.
 
 Hugging Face is the store. Documents are staged in batches of 500 and pushed as
 a single commit each, then deleted locally, so peak disk is one batch rather
@@ -69,6 +85,19 @@ department. There is no department filter because SAM accepts `deptname` and
 ignores it, returning the same total either way — a filter there would look like
 it worked and do nothing. Volume is bounded by notice type and date window,
 which the API does honour.
+
+`govinfo` walks the per-collection sitemaps GPO publishes for exactly this
+purpose. No key: `api.govinfo.gov` is a keyed convenience layer over the same
+content and is not used. A sitemap index gives per-year sitemaps, each of which
+gives package IDs, and the PDF is at a fixed path under `/content/pkg/`. Title
+and issue date come from the package's `mods.xml`, because the sitemap carries
+only a `lastmod` and that records when GPO last touched the row rather than
+when the document was issued -- a 2001 GAO report has a 2012 lastmod.
+
+Collections are chosen rather than swept: `USCOURTS` alone is 2.17M packages
+and would drown the rest, and `BILLSTATUS`, `BILLSUM` and `HOB` are metadata,
+not documents. `GAOREPORTS` on govinfo stops at 2008; GAO's own site has 2009
+onward and 403s anything but a browser, so that gap is still open.
 
 `foia_rooms` walks the reading rooms listed in api.foia.gov's own component
 directory: 615 FOIA offices, 311 reading rooms, 223 distinct hosts. Their
@@ -168,3 +197,14 @@ fallback. It is not authoritative: re-exporting a 2017 file in 2026 restamps it.
 
 Files are byte-identical to what the agency published. Nothing is converted,
 recompressed or edited.
+
+## Checks
+
+    python run_checks.py
+
+Offline, under a second, no network. It checks the wiring that otherwise only
+breaks partway through a run: that every source has the methods the collector
+calls, that every source's collection has a dataset and a card, and that every
+argument `main()` reads is one the parser actually defines -- `--r2` was read
+and never defined, so every collection run died with AttributeError while
+publishing, which returns earlier, kept working.

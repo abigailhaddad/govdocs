@@ -35,11 +35,13 @@ from .agencies import canonical
 from .sources.documentcloud import DocumentCloud
 from .sources.foia_rooms import FoiaRooms
 from .sources.governmentattic import GovernmentAttic
+from .sources.govinfo import GovInfo
 from .sources.oversight import Oversight
 from .sources.sam import Sam
 
 SOURCES = {"documentcloud": DocumentCloud, "foia_rooms": FoiaRooms,
-           "governmentattic": GovernmentAttic, "oversight": Oversight, "sam": Sam}
+           "governmentattic": GovernmentAttic, "govinfo": GovInfo,
+           "oversight": Oversight, "sam": Sam}
 
 SEEN = Path("data/seen.jsonl")
 PUBLISHED = Path("data/published.jsonl")
@@ -118,7 +120,18 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
     got = dupes = 0
     t0 = time.time()
 
-    for rec in src.discover(since=since, limit=limit):
+    # `limit` counts documents actually collected, not records discovered.
+    #
+    # It used to cap discovery instead, which meant a second run walked the
+    # same first N records, found every one of them already in seen.jsonl and
+    # collected nothing -- a nightly job on a fixed corpus made no progress
+    # after its first run. Discovery is left unbounded and the limit applied
+    # below, after the already-seen check.
+    #
+    # This is cheap because no source does per-record HTTP in discover(): they
+    # page through listings, and that paging costs the same either way. Yielding
+    # a record already held costs a dict. `max_calls` still bounds the paging.
+    for rec in src.discover(since=since, limit=None):
         key = f"{source_name}/{rec['notice_id']}_{rec['index']}"
         if key in keys:
             continue
@@ -165,6 +178,9 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
         staged_dir = STAGE / collection / "documents" / source_name
         if len(list(staged_dir.glob("*"))) >= BATCH:
             _flush(collection, got)
+
+        if limit and got >= limit:
+            break
 
     shutil.rmtree(scratch, ignore_errors=True)
     _flush(collection, got)
@@ -282,15 +298,22 @@ def build_metadata(collection: str, out_dir: Path) -> Path:
     return out
 
 
-def main() -> None:
+def _parser() -> argparse.ArgumentParser:
+    """Built separately from main() so the checks can inspect the real one."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--source", default="sam", choices=sorted(SOURCES))
     ap.add_argument("--since", default="2025-01-20")
     ap.add_argument("--limit", type=int, default=500)
     ap.add_argument("--max-calls", type=int, default=200)
+    ap.add_argument("--r2", action="store_true",
+                    help="also keep a copy in R2 (off by default)")
     ap.add_argument("--publish", metavar="COLLECTION", default=None,
                     help="build metadata and push that collection to Hugging Face")
-    a = ap.parse_args()
+    return ap
+
+
+def main() -> None:
+    a = _parser().parse_args()
 
     store.load_env()
     if a.publish:
