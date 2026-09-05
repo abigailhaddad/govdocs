@@ -41,20 +41,27 @@ DOC_RE = re.compile(r"\.(pdf|docx?|xlsx?)(\?|$)", re.I)
 # Path segments that carry no meaning as a title. DOJ serves files from
 # /<component>/media/<id>/dl, so taking the last segment titled every DOJ
 # document "dl".
-USELESS_NAMES = {"dl", "download", "file", "view", "get", "attachment", "doc",
-                 "document", "index", "default"}
+# Path segments that carry no meaning as a title: verbs, container folders and
+# bare ids. DOJ serves files from /<component>/media/<id>/dl, so taking the last
+# segment titled every DOJ document "dl" and taking the last useful-looking one
+# titled them all "media".
+USELESS_NAMES = {"dl", "download", "file", "files", "view", "get", "attachment",
+                 "doc", "document", "documents", "index", "default", "media",
+                 "sites", "content", "assets", "uploads", "pdf", "public"}
 
 
 def _name_from_url(url: str) -> str:
-    """A usable title from a URL when the page gave us none."""
+    """A usable title from a URL when the listing gave us none.
+
+    Keeps the parts that identify the document and drops the plumbing, so
+    /olc/media/1460356/dl becomes "olc-1460356" rather than "dl" or "media".
+    """
     parts = [urllib.parse.unquote(p) for p in
              urllib.parse.urlsplit(url).path.strip("/").split("/") if p]
-    for part in reversed(parts):
-        stem = part.rsplit(".", 1)[0]
-        if stem.lower() not in USELESS_NAMES and not stem.isdigit():
-            return part
-    # Nothing meaningful in the path: name it after where it came from.
-    return "-".join(parts[-3:]) if parts else "document"
+    keep = [p for p in parts if p.rsplit(".", 1)[0].lower() not in USELESS_NAMES]
+    if not keep:
+        return "document"
+    return "-".join(keep[-2:]) if len(keep) > 1 else keep[-1]
 # Pages that look like more of the same listing rather than site furniture.
 LISTING_RE = re.compile(
     r"(foia|reading[-_]?room|library|records|releases?|logs?|disclosure"
