@@ -98,14 +98,29 @@ class FoiaRooms:
         self._page = None
 
     def _allowed(self, url: str) -> bool:
+        """Does this host's robots.txt permit the URL?
+
+        robots.txt is fetched with our own session rather than by
+        RobotFileParser.read(), which treats a 403 as disallow-all. Several
+        agencies refuse any non-browser request, robots.txt included, so trusting
+        that turned "this host blocks our fetcher" into "this host forbids
+        crawling" -- and we blocked ourselves from FBI Vault and HHS, both of
+        whose published robots.txt allow everything we wanted.
+
+        A 403 or a network failure is not a directive. A 404 means no rules at
+        all. Only a file we actually read is obeyed.
+        """
         host = urllib.parse.urlsplit(url).netloc
         if host not in self._robots:
-            rp = urllib.robotparser.RobotFileParser()
-            rp.set_url(f"{urllib.parse.urlsplit(url).scheme}://{host}/robots.txt")
+            rp = None
             try:
-                rp.read()
-            except Exception:
-                rp = None          # unreachable robots.txt: treat as permissive
+                r = self.session.get(
+                    f"{urllib.parse.urlsplit(url).scheme}://{host}/robots.txt", timeout=30)
+                if r.status_code == 200 and r.text.strip():
+                    rp = urllib.robotparser.RobotFileParser()
+                    rp.parse(r.text.splitlines())
+            except requests.RequestException:
+                rp = None
             self._robots[host] = rp
         rp = self._robots[host]
         if rp is None:

@@ -87,6 +87,22 @@ PROFILES: dict[str, Profile] = {
         page_param="?page={n}",
         max_pages=60,
     ),
+    # 403 to any direct request, 200 to a headed browser. The Vault is a
+    # browse tree rather than a paged listing, so the generic same-host crawl
+    # does the walking and this only supplies the way in.
+    "vault.fbi.gov": Profile(
+        host="vault.fbi.gov",
+        page_param=None,
+        fetch_mode="browser",
+        notes="Direct fetches get 403; headed browser gets 200.",
+    ),
+    "www.hhs.gov": Profile(
+        host="www.hhs.gov",
+        page_param="?page={n}",
+        max_pages=40,
+        fetch_mode="browser",
+        notes="403 direct, 200 headed. 10 documents linked from the front page.",
+    ),
     "oig.justice.gov": Profile(
         host="oig.justice.gov",
         page_param="?page={n}",
