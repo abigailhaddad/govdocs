@@ -62,7 +62,13 @@ class Sam:
         except requests.RequestException:
             return []
         if r.status_code == 429:
-            raise SystemExit("SAM 429 - daily quota exhausted; resumes midnight UTC")
+            # Stop this source, do not end the run. Quota is shared and resets
+            # at midnight UTC; the other sources have nothing to do with it, and
+            # a SystemExit here took the whole collection step down with it.
+            print("SAM 429 - daily quota exhausted; stopping this source "
+                  "(resumes midnight UTC)")
+            self.calls = self.max_calls
+            return []
         if r.status_code != 200:
             return []
         return r.json().get("opportunitiesData") or []
