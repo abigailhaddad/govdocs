@@ -127,6 +127,53 @@ def check_transient_errors_retry() -> None:
           f"wrongly marked seen: {sorted(retried)}")
 
 
+def check_circuit_breaker() -> None:
+    """A run must give up on a host that is failing every request.
+
+    govinfo's content tier returned 502 to everything for over an hour. Each
+    document was handled correctly on its own -- record the error, continue --
+    and the run therefore walked 1,634 packages against a dead server.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    attempts = {"n": 0}
+
+    class AlwaysFails:
+        name = collection = "probe"
+
+        def __init__(self, max_calls=200):
+            self.calls = 0
+
+        def discover(self, since, until=None, limit=None):
+            for i in range(10_000):
+                yield {"source": "probe", "notice_id": f"d{i}", "index": 0,
+                       "url": f"https://example.invalid/{i}", "landing_url": "",
+                       "title": "", "date": "", "agency": "", "office": "",
+                       "notice_type": ""}
+
+        def fetch(self, rec):
+            attempts["n"] += 1
+            raise RuntimeError("502 Server Error: Bad Gateway")
+
+    tmp = _P(tempfile.mkdtemp())
+    orig = (collect.SOURCES, collect.SEEN, collect.STAGE, collect._flush)
+    try:
+        collect.SOURCES = {"probe": AlwaysFails}
+        collect.SEEN = tmp / "seen.jsonl"
+        collect.STAGE = tmp / "stage"
+        collect._flush = lambda *a, **k: None
+        collect.collect("probe", since="2020-01-01", limit=500, max_calls=10)
+    finally:
+        (collect.SOURCES, collect.SEEN, collect.STAGE, collect._flush) = orig
+
+    n = attempts["n"]
+    check("a run stops once every fetch is failing",
+          n <= collect.MAX_CONSECUTIVE_FAILURES,
+          f"kept going for {n} failed fetches "
+          f"(limit is {collect.MAX_CONSECUTIVE_FAILURES})")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -135,6 +182,7 @@ def main() -> int:
     check_cli_args_exist()
     check_limit_counts_collected()
     check_transient_errors_retry()
+    check_circuit_breaker()
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nall passed")
     return 1 if FAILURES else 0
 

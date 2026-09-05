@@ -48,6 +48,14 @@ PUBLISHED = Path("data/published.jsonl")
 STAGE = Path("data/stage")
 MAX_BYTES = 200 * 1024 * 1024
 
+# Stop a run once this many fetches fail in a row. When govinfo's content tier
+# went down, the collector did the locally-correct thing on each document --
+# record the error, move on -- and so walked 1,634 packages against a server
+# that was returning 502 to everything. Slowing the crawl does not help there;
+# it just spreads the same pointless traffic over more hours. A run that cannot
+# fetch anything should stop and let a later one pick it up.
+MAX_CONSECUTIVE_FAILURES = 25
+
 # How many documents to hold on disk at once while publishing. 300 averages a
 # few hundred megabytes and keeps each Hugging Face commit a sane size.
 BATCH = 500          # documents per commit
@@ -137,8 +145,9 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
 
     keys, hashes = _seen()
     scratch = Path(tempfile.mkdtemp(prefix="govdocs-"))
-    got = dupes = 0
+    got = dupes = fails = 0
     t0 = time.time()
+    stopped_early = ""
 
     # `limit` counts documents actually collected, not records discovered.
     #
@@ -159,7 +168,13 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
             data, filename = src.fetch(rec)
         except Exception as exc:
             _record({"key": key, "url": rec["url"], "error": f"fetch: {exc}"})
+            fails += 1
+            if fails >= MAX_CONSECUTIVE_FAILURES:
+                stopped_early = (f"stopped after {fails} consecutive failures; "
+                                 f"last: {exc}")
+                break
             continue
+        fails = 0
         if not data or len(data) > MAX_BYTES:
             _record({"key": key, "url": rec["url"], "error": "empty or too large"})
             continue
@@ -206,6 +221,8 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
     _flush(collection, got)
     print(f"collected {got} documents in {time.time()-t0:.0f}s "
           f"({dupes} duplicate files skipped, {src.calls} search calls)")
+    if stopped_early:
+        print(f"  {stopped_early}")
 
 
 def _flush(collection: str, n_so_far: int) -> None:

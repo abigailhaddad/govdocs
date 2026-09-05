@@ -46,6 +46,15 @@ same command run repeatedly keeps making progress instead of re-walking the
 records it already has. `data/seen.jsonl` is what it checks against. Discovery
 itself is unbounded and `--max-calls` bounds the paging.
 
+govinfo is crawled at one request a second. robots.txt declares no crawl
+delay, but 0.2s against files averaging 20 MB drew 502s across the whole content
+tier, so the spacing is set by what the host tolerated rather than by what it
+permits. A run also stops after `MAX_CONSECUTIVE_FAILURES` failed fetches in a
+row: when that tier went down the collector did the locally-correct thing on
+each document and so walked 1,634 packages against a server returning 502 to
+everything. Crawling slower does not help there, it only spreads the same
+pointless traffic over more hours.
+
 govinfo documents are large -- congressional hearings average around 20 MB
 against one or two for the other sources -- so `BATCH` documents stage to disk
 before the first push frees anything. Keep `--limit` well under `BATCH` there,

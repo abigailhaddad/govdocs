@@ -79,7 +79,7 @@ class GovInfo:
 
     def __init__(self, max_calls: int = 200,
                  collections: tuple[str, ...] = DEFAULT_COLLECTIONS,
-                 delay: float = 0.2):
+                 delay: float = 1.0):
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
         self.max_calls = max_calls
@@ -89,7 +89,11 @@ class GovInfo:
 
     def _get(self, url: str, timeout: int = 60) -> requests.Response:
         if self.calls:
-            time.sleep(self.delay)   # no crawl-delay in robots.txt; be polite anyway
+            # robots.txt declares no crawl-delay, but 0.2s against files
+            # averaging 20 MB drew 502s across the whole content tier, so the
+            # spacing here is set by what the host tolerated, not by what it
+            # permits.
+            time.sleep(self.delay)
         r = self.session.get(url, timeout=timeout)
         r.raise_for_status()
         return r
