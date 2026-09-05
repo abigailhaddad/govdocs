@@ -99,6 +99,19 @@ returning 403 to every `?page=N` request, browser headers and all, which is why
 that host is marked `via_proxy` and goes through ScraperAPI. Those requests cost
 credits, so the flag is per host rather than a global fallback.
 
+`documentcloud` reaches the releases reading rooms never show. Agencies must
+proactively post only the four categories in 5 U.S.C. 552(a)(2) plus records
+already requested three or more times; a one-off release to a journalist goes to
+that person and nowhere else, which is most of what FOIA produces. DocumentCloud
+is where a lot of it ends up -- 455,300 public documents match "foia", uploaded
+by the newsrooms that received them, and its search API needs no credentials.
+
+Two things about that API. Passing `order=created_at` destroys relevance
+ranking: it then returns the newest public uploads whatever the query, which is
+town council agendas. And "freedom of information act" matches 396,713
+documents, most citing the statute rather than being a product of it, so the
+queries match how agencies TITLE a release instead.
+
 `oversight` reads oversight.gov's api/v2/reports, the government-wide feed of
 Inspector General work. One call covers 47 OIGs. It ignores pagination —
 `page`, `offset` and `items_per_page` all return the same 1,063 rows — so it is

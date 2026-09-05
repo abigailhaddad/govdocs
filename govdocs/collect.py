@@ -30,11 +30,12 @@ import time
 from pathlib import Path
 
 from . import publish, store
+from .sources.documentcloud import DocumentCloud
 from .sources.foia_rooms import FoiaRooms
 from .sources.oversight import Oversight
 from .sources.sam import Sam
 
-SOURCES = {"foia_rooms": FoiaRooms, "oversight": Oversight, "sam": Sam}
+SOURCES = {"documentcloud": DocumentCloud, "foia_rooms": FoiaRooms, "oversight": Oversight, "sam": Sam}
 
 SEEN = Path("data/seen.jsonl")
 PUBLISHED = Path("data/published.jsonl")
