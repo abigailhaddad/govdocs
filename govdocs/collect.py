@@ -32,12 +32,13 @@ from pathlib import Path
 
 from . import publish, store
 from .agencies import canonical
+from .sources.documentcloud import DocumentCloud
 from .sources.foia_rooms import FoiaRooms
 from .sources.governmentattic import GovernmentAttic
 from .sources.oversight import Oversight
 from .sources.sam import Sam
 
-SOURCES = {"foia_rooms": FoiaRooms,
+SOURCES = {"documentcloud": DocumentCloud, "foia_rooms": FoiaRooms,
            "governmentattic": GovernmentAttic, "oversight": Oversight, "sam": Sam}
 
 SEEN = Path("data/seen.jsonl")

@@ -51,6 +51,17 @@ store the same bytes twice.
 `data/seen.jsonl` records every attempt, including failures and duplicates, and
 is what stops a rerun re-fetching the archive.
 
+## What is collected, and what is not
+
+The test is whether a credential is needed. Endpoints that serve public
+documents to anyone -- no key, no account, no agreement entered -- are collected
+from; the documents are US government works and carry no copyright. Anything
+requiring an account is not, because signing up means accepting terms, and those
+terms are not something to work around. MuckRock's API returns 401 without an
+account, so it is left alone.
+
+Rate limits and robots.txt are honoured everywhere regardless.
+
 ## Sources
 
 `sam` walks the SAM.gov Opportunities API across all nine notice types and every

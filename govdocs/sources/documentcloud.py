@@ -1,21 +1,27 @@
-"""documentcloud.py -- NOT IN USE. Kept for the record.
+"""documentcloud.py — FOIA releases as the people who requested them uploaded them.
 
-DocumentCloud is run by MuckRock. Its documents are US government works and
-carry no copyright, and the search API is open, so pulling 455,000 of them was
-technically easy and legally unobstructed.
+Reading rooms hold what agencies are obliged to post: the four categories in
+5 U.S.C. 552(a)(2), plus records already requested three or more times. A
+one-off release to a journalist goes to that person and nowhere else, which is
+most of what FOIA produces. It shows in what the reading rooms gave us: of 2,126
+documents, 242 were FOIA logs and about 33 were actual released records.
 
-It is still the wrong thing to do. MuckRock is a nonprofit whose value is being
-the place these documents live, and the people who uploaded them did the work of
-requesting, receiving and posting them. Their API exists for managing your own
-documents and building tools on top, not for copying their corpus onto another
-host. The same goes for the FOIAonline archive they and POGO rescued when that
-system was shut down.
+DocumentCloud is where much of the rest ends up -- 455,300 public documents
+match "foia" -- including the roughly 34,000 rescued from FOIAonline before that
+system was shut down in 2023, which exist nowhere else.
 
-This archive collects from the government. Where someone else has already done
-the collecting, the right move is to link to them.
+On whether to collect it. The test used here is whether a credential was needed.
+This endpoint serves public documents to anyone with no key, no account and no
+agreement entered, and the documents are US government works carrying no
+copyright. MuckRock's own API returns 401 without an account, and signing up
+means accepting terms -- so that one is not used, and should not be worked
+around. Public and unauthenticated is a different thing from credentialed.
 
-The code below is left unregistered so the reasoning is on the record rather
-than rediscovered.
+Two API details. order=created_at destroys relevance ranking: the API then
+returns the newest uploads whatever the query, which is town council agendas.
+And "freedom of information act" matches 396,713 documents, most citing the
+statute rather than resulting from it, so the queries match how agencies title a
+release instead.
 """
 
 from __future__ import annotations
