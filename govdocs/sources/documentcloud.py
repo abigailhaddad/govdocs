@@ -39,6 +39,12 @@ QUERIES = (
     '"responsive records" AND released',
     '"FOIA request" AND "enclosed"',
     'title:"foia release"',
+    # FOIAonline was the shared request portal for around twenty agencies until
+    # it was shut down in 2023. MuckRock and POGO captured roughly 34,000
+    # documents from it -- 110GB, mostly EPA, NLRB, GSA and DLA -- and put them
+    # here rather than anywhere of their own, so this is the only route to
+    # releases from a system that no longer exists.
+    'foiaonline',
 )
 
 PER_PAGE = 100
