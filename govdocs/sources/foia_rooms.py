@@ -37,6 +37,24 @@ USER_AGENT = ("govdocs/0.1 (federal document archive; "
               "contact: abigail.haddad@gmail.com)")
 
 DOC_RE = re.compile(r"\.(pdf|docx?|xlsx?)(\?|$)", re.I)
+
+# Path segments that carry no meaning as a title. DOJ serves files from
+# /<component>/media/<id>/dl, so taking the last segment titled every DOJ
+# document "dl".
+USELESS_NAMES = {"dl", "download", "file", "view", "get", "attachment", "doc",
+                 "document", "index", "default"}
+
+
+def _name_from_url(url: str) -> str:
+    """A usable title from a URL when the page gave us none."""
+    parts = [urllib.parse.unquote(p) for p in
+             urllib.parse.urlsplit(url).path.strip("/").split("/") if p]
+    for part in reversed(parts):
+        stem = part.rsplit(".", 1)[0]
+        if stem.lower() not in USELESS_NAMES and not stem.isdigit():
+            return part
+    # Nothing meaningful in the path: name it after where it came from.
+    return "-".join(parts[-3:]) if parts else "document"
 # Pages that look like more of the same listing rather than site furniture.
 LISTING_RE = re.compile(
     r"(foia|reading[-_]?room|library|records|releases?|logs?|disclosure"
@@ -268,8 +286,7 @@ class FoiaRooms:
                 if url in seen_docs:
                     continue
                 seen_docs.add(url)
-                name = row_title or urllib.parse.unquote(
-                    url.rstrip("/").split("/")[-1].split("?")[0])
+                name = row_title or _name_from_url(url)
                 yield {
                     "source": "foia_rooms",
                     "notice_id": str(abs(hash(url)) % (10 ** 12)),
