@@ -28,6 +28,7 @@ from typing import Iterator
 import requests
 
 from .profiles import for_url
+from .room_overrides import resolve
 
 COMPONENTS_API = "https://api.foia.gov/api/agency_components"
 DIRECTORY = Path("data/reading_rooms.json")
@@ -264,7 +265,12 @@ class FoiaRooms:
         n = 0
         seen_docs: set[str] = set()
         for room in rooms:
-            start = room["url"]
+            # The directory lists rooms that have moved or been retired, so the
+            # listed URL is not always the one worth fetching. See
+            # room_overrides: 37 of 223 hosts answered neither 200 nor 403.
+            start = resolve(room["url"])
+            if start is None:
+                continue
             html = self._get(start)
             if not html:
                 continue

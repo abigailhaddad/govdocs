@@ -178,6 +178,33 @@ def check_circuit_breaker() -> None:
           f"(limit is {collect.MAX_CONSECUTIVE_FAILURES})")
 
 
+def check_room_overrides() -> None:
+    """The corrections to api.foia.gov's directory must still apply to it.
+
+    An override whose key is no longer in the directory is dead weight, and
+    silently so: it neither fires nor complains.
+    """
+    import json
+    from pathlib import Path as _P
+    from govdocs.sources.room_overrides import OVERRIDES, KNOWN_DEAD
+
+    selfmap = [k for k, v in OVERRIDES.items() if k == v]
+    check("no override points a URL at itself", not selfmap, str(selfmap[:3]))
+
+    hosts = {k.split("/")[2] for k in OVERRIDES if "//" in k}
+    both = sorted(hosts & set(KNOWN_DEAD))
+    check("no host is both overridden and known-dead", not both, str(both))
+
+    d = _P("data/reading_rooms.json")
+    if not d.exists():
+        print("  SKIP  overrides match the directory (no local copy)")
+        return
+    listed = {r["url"] for r in json.loads(d.read_text())}
+    stale = sorted(set(OVERRIDES) - listed)
+    check("every override still matches a listed room", not stale,
+          f"{len(stale)} no longer in the directory: {stale[:2]}")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -187,6 +214,7 @@ def main() -> int:
     check_limit_counts_collected()
     check_transient_errors_retry()
     check_circuit_breaker()
+    check_room_overrides()
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nall passed")
     return 1 if FAILURES else 0
 

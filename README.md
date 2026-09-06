@@ -118,6 +118,16 @@ and would drown the rest, and `BILLSTATUS`, `BILLSUM` and `HOB` are metadata,
 not documents. `GAOREPORTS` on govinfo stops at 2008; GAO's own site has 2009
 onward and 403s anything but a browser, so that gap is still open.
 
+The directory is not always right about where a reading room is. Probing all
+223 hosts in it: 126 answered, 59 refused a plain request -- the known wall,
+ATF, DEA, the DOT family, most .mil -- and 37 were neither, returning 404s, dead
+hostnames or expired certificates. That last group is rot, not blocking, and
+about half of it is repairable: the agency still publishes a FOIA library, at an
+address the directory never learned. `room_overrides.py` carries those
+corrections and the hosts with nothing left to point at, several of which are
+agencies that no longer exist. It is only the diff; rooms the directory gets
+right are not listed.
+
 `foia_rooms` walks the reading rooms listed in api.foia.gov's own component
 directory: 615 FOIA offices, 311 reading rooms, 223 distinct hosts. Their
 layouts have nothing in common, so it does not parse them -- it takes every
