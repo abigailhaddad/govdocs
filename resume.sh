@@ -16,6 +16,17 @@
 set -u
 cd "$(dirname "$0")" || exit 1
 
+# One round at a time. A round takes ten minutes or so and the schedule is
+# every two hours, but a stalled one must not have a second piling in behind
+# it: they would write the same log and stage into the same directory.
+LOCK="data/.resume.lock"
+mkdir -p data
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S')  skip: another round holds the lock" >> data/resume.log
+  exit 0
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+
 PROBE="https://www.govinfo.gov/content/pkg/CHRG-119hhrg62435/pdf/CHRG-119hhrg62435.pdf"
 UA="govdocs/0.1 (federal document archive; contact: abigail.haddad@gmail.com)"
 LOG="data/resume.log"

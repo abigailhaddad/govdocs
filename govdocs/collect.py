@@ -46,7 +46,10 @@ SOURCES = {"documentcloud": DocumentCloud, "foia_rooms": FoiaRooms,
 SEEN = Path("data/seen.jsonl")
 PUBLISHED = Path("data/published.jsonl")
 STAGE = Path("data/stage")
-MAX_BYTES = 200 * 1024 * 1024
+# Two gigabytes. The old 200 MB cap silently dropped real documents -- a 339 MB
+# National Park Service FOIA release among them -- and nothing in the dataset
+# showed they were missing.
+MAX_BYTES = 2 * 1024 * 1024 * 1024
 
 # Stop a run once this many fetches fail in a row. When govinfo's content tier
 # went down, the collector did the locally-correct thing on each document --
@@ -70,8 +73,9 @@ EXT_CONTENT_TYPE = {
 
 
 # A failure that will still be a failure next time. Anything else -- 5xx,
-# timeouts, dropped connections -- is worth another go on a later run.
-PERMANENT_ERROR = re.compile(r"\b(404|410)\b|empty or too large", re.I)
+# timeouts, dropped connections, an empty body, a file over the current cap --
+# is worth another go on a later run. Only "gone" is permanent.
+PERMANENT_ERROR = re.compile(r"\b(404|410)\b", re.I)
 
 
 def _seen() -> tuple[set[str], set[str]]:
@@ -175,8 +179,19 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
                 break
             continue
         fails = 0
-        if not data or len(data) > MAX_BYTES:
-            _record({"key": key, "url": rec["url"], "error": "empty or too large"})
+        if not data:
+            # A zero-byte response is a bad moment, not a verdict on the file.
+            _record({"key": key, "url": rec["url"], "error": "empty response"})
+            fails += 1
+            if fails >= MAX_CONSECUTIVE_FAILURES:
+                stopped_early = f"stopped after {fails} consecutive failures; last: empty response"
+                break
+            continue
+        if len(data) > MAX_BYTES:
+            # Recorded, not settled: raising the cap should bring these back
+            # rather than leaving them invisible.
+            _record({"key": key, "url": rec["url"],
+                     "error": f"too large: {len(data)} bytes"})
             continue
 
         digest = store.sha256(data)

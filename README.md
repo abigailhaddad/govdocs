@@ -107,6 +107,12 @@ and issue date come from the package's `mods.xml`, because the sitemap carries
 only a `lastmod` and that records when GPO last touched the row rather than
 when the document was issued -- a 2001 GAO report has a 2012 lastmod.
 
+Collections are walked round-robin, one package from each in turn. In order
+meant depth before breadth -- CHRG alone is 46,847 packages, so a night of
+collecting produced 3,500 hearings and nothing else, with GAO reports and
+presidential documents still a hundred hours away. Interleaving costs nothing,
+since the sitemaps are walked either way, and makes every batch a cross-section.
+
 Collections are chosen rather than swept: `USCOURTS` alone is 2.17M packages
 and would drown the rest, and `BILLSTATUS`, `BILLSUM` and `HOB` are metadata,
 not documents. `GAOREPORTS` on govinfo stops at 2008; GAO's own site has 2009

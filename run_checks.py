@@ -106,7 +106,8 @@ def check_transient_errors_retry() -> None:
         {"key": "s/collected_0", "doc_id": "collected_0", "sha256": "a"},
         {"key": "s/dupe_0", "sha256": "a", "duplicate": True},
         {"key": "s/gone_0", "error": "fetch: 404 Client Error: Not Found"},
-        {"key": "s/toobig_0", "error": "empty or too large"},
+        {"key": "s/toobig_0", "error": "too large: 512000000 bytes"},
+        {"key": "s/empty_0", "error": "empty response"},
         {"key": "s/blip_0", "error": "fetch: 502 Server Error: Bad Gateway"},
         {"key": "s/slow_0", "error": "fetch: HTTPSConnectionPool read timeout"},
     ]
@@ -120,10 +121,13 @@ def check_transient_errors_retry() -> None:
         collect.SEEN = orig
         os.unlink(path)
     check("collected and permanently-gone documents count as seen",
-          {"s/collected_0", "s/dupe_0", "s/gone_0", "s/toobig_0"} <= keys,
-          f"missing from seen: {{'s/collected_0','s/dupe_0','s/gone_0','s/toobig_0'}} - {keys}")
-    retried = {"s/blip_0", "s/slow_0"} & keys
-    check("5xx and timeouts stay retryable", not retried,
+          {"s/collected_0", "s/dupe_0", "s/gone_0"} <= keys,
+          f"missing from seen: {{'s/collected_0','s/dupe_0','s/gone_0'}} - {keys}")
+    # Oversized and empty are recorded but not settled: raising MAX_BYTES, or
+    # the host having a better minute, should bring them back rather than
+    # leaving them invisible. Only "gone" closes the door.
+    retried = {"s/blip_0", "s/slow_0", "s/toobig_0", "s/empty_0"} & keys
+    check("5xx, timeouts, empty bodies and oversized files stay retryable", not retried,
           f"wrongly marked seen: {sorted(retried)}")
 
 

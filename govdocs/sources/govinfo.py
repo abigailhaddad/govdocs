@@ -115,50 +115,70 @@ class GovInfo:
                 dated.append((year, url))
         return [u for _, u in sorted(dated, reverse=True)]
 
+    def _records(self, coll: str, since_year: int) -> Iterator[dict]:
+        """Every package in one collection, newest year first."""
+        for sm in self._year_sitemaps(coll, since_year):
+            if self.calls >= self.max_calls:
+                return
+            self.calls += 1
+            try:
+                xml = self._get(sm).text
+            except Exception:
+                continue
+            for loc in LOC_RE.findall(xml):
+                m = PKG_RE.search(loc)
+                if not m:
+                    continue
+                pkg = html.unescape(m.group(1))
+                # Title and date are left to fetch(): collect.py skips
+                # already-collected keys before calling it, so a rerun does not
+                # spend one mods.xml request per document it already has.
+                yield {
+                    "source": "govinfo",
+                    "notice_id": UNSAFE_RE.sub("-", pkg)[:120],
+                    "index": 0,
+                    "url": f"{BASE}/content/pkg/{pkg}/pdf/{pkg}.pdf",
+                    "landing_url": loc,
+                    "title": "",
+                    "date": "",
+                    "agency": COLLECTION_AGENCY.get(coll, ""),
+                    "office": coll,
+                    "notice_type": COLLECTION_KIND.get(coll, f"govinfo {coll}"),
+                    "package_id": pkg,
+                }
+
     def discover(self, since: str, until: str | None = None,
                  limit: int | None = None) -> Iterator[dict]:
+        """One package from each collection in turn, rather than one collection
+        at a time.
+
+        Walking them in order meant depth before breadth: CHRG alone is 46,847
+        packages, so at the rate this collects, GAO reports and presidential
+        documents were about a hundred hours away and every run looked like a
+        hearings archive. Round-robin costs nothing -- the sitemaps are walked
+        either way -- and every batch is a cross-section instead.
+        """
         try:
             since_year = int(str(since)[:4])
         except ValueError:
             since_year = 0
+        streams = [self._records(c, since_year) for c in self.collections]
         n = 0
         seen: set[str] = set()
-        for coll in self.collections:
-            for sm in self._year_sitemaps(coll, since_year):
-                if self.calls >= self.max_calls:
-                    return
-                self.calls += 1
+        while streams:
+            for st in list(streams):
                 try:
-                    xml = self._get(sm).text
-                except Exception:
+                    rec = next(st)
+                except StopIteration:
+                    streams.remove(st)
                     continue
-                for loc in LOC_RE.findall(xml):
-                    m = PKG_RE.search(loc)
-                    if not m:
-                        continue
-                    pkg = html.unescape(m.group(1))
-                    if pkg in seen:
-                        continue
-                    seen.add(pkg)
-                    # Title and date are left to fetch(): collect.py skips
-                    # already-collected keys before calling it, so a rerun does
-                    # not spend one mods.xml request per document it already has.
-                    yield {
-                        "source": "govinfo",
-                        "notice_id": UNSAFE_RE.sub("-", pkg)[:120],
-                        "index": 0,
-                        "url": f"{BASE}/content/pkg/{pkg}/pdf/{pkg}.pdf",
-                        "landing_url": loc,
-                        "title": "",
-                        "date": "",
-                        "agency": COLLECTION_AGENCY.get(coll, ""),
-                        "office": coll,
-                        "notice_type": COLLECTION_KIND.get(coll, f"govinfo {coll}"),
-                        "package_id": pkg,
-                    }
-                    n += 1
-                    if limit and n >= limit:
-                        return
+                if rec["package_id"] in seen:
+                    continue
+                seen.add(rec["package_id"])
+                yield rec
+                n += 1
+                if limit and n >= limit:
+                    return
 
     def _mods(self, rec: dict) -> None:
         """Fill in title and issue date from the package's MODS record."""
