@@ -230,6 +230,61 @@ def check_sharded_paths() -> None:
           "a failed push would delete documents already recorded as collected")
 
 
+def check_one_bad_host_does_not_end_a_run() -> None:
+    """A walled host must not end a run that spans hundreds of them.
+
+    foia_rooms visits 223 hosts and 59 refuse a plain request. Counting
+    failures globally, 25 consecutive 403s from abmc.gov alone ended a run with
+    400 rooms still unvisited.
+    """
+    import tempfile
+    from pathlib import Path as _P
+    tried = {"bad": 0, "good": 0}
+
+    class OneBadHost:
+        name = collection = "probe"
+
+        def __init__(self, max_calls=200):
+            self.calls = 0
+
+        def discover(self, since, until=None, limit=None):
+            for i in range(400):        # a long run of one walled host...
+                yield {"source": "probe", "notice_id": f"b{i}", "index": 0,
+                       "url": f"https://walled.invalid/{i}", "landing_url": "",
+                       "title": "", "date": "", "agency": "", "office": "",
+                       "notice_type": ""}
+            for i in range(5):          # ...and a healthy one after it
+                yield {"source": "probe", "notice_id": f"g{i}", "index": 0,
+                       "url": f"https://fine.invalid/{i}", "landing_url": "",
+                       "title": "", "date": "", "agency": "", "office": "",
+                       "notice_type": ""}
+
+        def fetch(self, rec):
+            if "walled" in rec["url"]:
+                tried["bad"] += 1
+                raise RuntimeError("403 Client Error: Forbidden")
+            tried["good"] += 1
+            return b"%PDF-1.4 ok", "x.pdf"
+
+    tmp = _P(tempfile.mkdtemp())
+    orig = (collect.SOURCES, collect.SEEN, collect.STAGE, collect._flush)
+    try:
+        collect.SOURCES = {"probe": OneBadHost}
+        collect.SEEN = tmp / "seen.jsonl"
+        collect.STAGE = tmp / "stage"
+        collect._flush = lambda *a, **k: None
+        collect.collect("probe", since="2020-01-01", limit=50, max_calls=10)
+    finally:
+        (collect.SOURCES, collect.SEEN, collect.STAGE, collect._flush) = orig
+
+    check("a walled host is dropped, not the whole run",
+          tried["bad"] <= collect.HOST_FAILURE_LIMIT,
+          f"kept hitting the bad host {tried['bad']} times")
+    check("the run continues to healthy hosts afterwards",
+          tried["good"] == 5,
+          f"only reached the good host {tried['good']} times")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -241,6 +296,7 @@ def main() -> int:
     check_circuit_breaker()
     check_room_overrides()
     check_sharded_paths()
+    check_one_bad_host_does_not_end_a_run()
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nall passed")
     return 1 if FAILURES else 0
 

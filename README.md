@@ -255,6 +255,12 @@ Meant for cron:
 Safe to run more often than necessary: the collector skips what it already has,
 and stops itself if the host dies partway through. It logs to `data/resume.log`.
 
+Failures are counted per host, not per run. A host that fails ten times in a row
+is dropped for the rest of the run and the rest carry on -- foia_rooms visits
+223 hosts and 59 of them refuse a plain request, so counted globally one walled
+agency ended a run with four hundred rooms still unvisited. Dropped hosts are
+not recorded as failures, so a later run tries them again.
+
 ## When an upload fails
 
     python -m govdocs.collect --flush govinfo
