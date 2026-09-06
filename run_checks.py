@@ -205,6 +205,31 @@ def check_room_overrides() -> None:
           f"{len(stale)} no longer in the directory: {stale[:2]}")
 
 
+def check_sharded_paths() -> None:
+    """Documents must be foldered, and the manifest must follow them.
+
+    Hugging Face rejects a commit leaving over 10,000 files in one directory.
+    documents/govinfo/ reached 9,997 and every push after that failed with a
+    400 no retry could clear, while collect() went on recording documents as
+    collected -- 500 of them existed nowhere but the staging directory.
+    """
+    a = collect._doc_path("govinfo", "ab12cd", "DOC-1_0", ".pdf")
+    check("document paths are sharded by checksum",
+          a == "documents/govinfo/ab/DOC-1_0.pdf", f"got {a!r}")
+
+    src = inspect.getsource(collect.build_metadata)
+    check("the manifest uses the recorded path, not a recomputed one",
+          'r.get("path")' in src,
+          "build_metadata recomputes the path and will mislabel older flat files")
+
+    src2 = inspect.getsource(collect._flush)
+    idx_up = src2.find("upload_folder")
+    idx_rm = src2.find("rmtree")
+    check("staging is cleared only after the upload returns",
+          idx_up != -1 and idx_rm != -1 and idx_rm > idx_up,
+          "a failed push would delete documents already recorded as collected")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -215,6 +240,7 @@ def main() -> int:
     check_transient_errors_retry()
     check_circuit_breaker()
     check_room_overrides()
+    check_sharded_paths()
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nall passed")
     return 1 if FAILURES else 0
 

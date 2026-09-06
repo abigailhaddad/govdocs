@@ -63,6 +63,18 @@ MAX_CONSECUTIVE_FAILURES = 25
 # few hundred megabytes and keeps each Hugging Face commit a sane size.
 BATCH = 500          # documents per commit
 
+# Hugging Face rejects any commit that would leave more than 10,000 files in a
+# single directory, and documents/<source>/ hit that at 9,997 with a 400 that
+# no retry can clear. Files are foldered by the first byte of their checksum:
+# 256 shards, evenly filled because a hash is evenly distributed, good for 2.5M
+# documents per source. The shard is recorded per document rather than
+# recomputed, so the manifest keeps pointing at the older flat files.
+SHARDS = 2           # hex characters of the sha256
+
+
+def _doc_path(source: str, digest: str, doc_id: str, ext: str) -> str:
+    return f"documents/{source}/{digest[:SHARDS]}/{doc_id}{ext}"
+
 EXT_CONTENT_TYPE = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -211,9 +223,9 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
                       EXT_CONTENT_TYPE.get(ext, "application/octet-stream"))
 
         # Staged for the next commit, and removed once it lands.
-        staged = STAGE / collection / "documents" / source_name
-        staged.mkdir(parents=True, exist_ok=True)
-        out = staged / f"{doc_id}{ext}"
+        rel = _doc_path(source_name, digest, doc_id, ext)
+        out = STAGE / collection / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(data)
         pages, pdf_date = (_pdf_facts(out) if ext == ".pdf" else (0, ""))
         if not (rec.get("date") or "").strip():
@@ -221,12 +233,12 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
 
         _record({"key": key, "sha256": digest, "r2_key": r2_key,
                  "doc_id": doc_id, "ext": ext, "bytes": len(data),
-                 "pages": pages,
+                 "pages": pages, "path": rel,
                  "filename": filename, "collection": collection, **rec})
         got += 1
 
         staged_dir = STAGE / collection / "documents" / source_name
-        if len(list(staged_dir.glob("*"))) >= BATCH:
+        if sum(1 for _ in staged_dir.rglob("*") if _.is_file()) >= BATCH:
             _flush(collection, got)
 
         if limit and got >= limit:
@@ -300,7 +312,8 @@ def publish_collection(collection: str) -> str:
         work = Path(tempfile.mkdtemp(prefix="govdocs-batch-"))
         try:
             for r in chunk:
-                dest = work / "documents" / r.get("source", "") / f"{r['doc_id']}{r.get('ext','')}"
+                dest = work / (r.get("path") or
+                               f"documents/{r.get('source','')}/{r['doc_id']}{r.get('ext','')}")
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     body = s3.get_object(Bucket=store.bucket(), Key=r["r2_key"])["Body"].read()
@@ -341,7 +354,9 @@ def build_metadata(collection: str, out_dir: Path) -> Path:
                     "filename": r.get("filename", ""), "ext": r.get("ext", ""),
                     "bytes": int(r.get("bytes", 0)), "pages": int(r.get("pages", 0)),
                     "sha256": r.get("sha256", ""),
-                    "path": f"documents/{r.get('source','')}/{r['doc_id']}{r.get('ext','')}",
+                    # Older rows predate sharding and are still flat.
+                    "path": r.get("path") or
+                            f"documents/{r.get('source','')}/{r['doc_id']}{r.get('ext','')}",
                 })
     out = out_dir / "metadata.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -359,6 +374,9 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-calls", type=int, default=200)
     ap.add_argument("--r2", action="store_true",
                     help="also keep a copy in R2 (off by default)")
+    ap.add_argument("--flush", metavar="COLLECTION", default=None,
+                    help="push whatever is staged on disk and clear it; use "
+                         "after a failed upload left documents behind")
     ap.add_argument("--publish", metavar="COLLECTION", default=None,
                     help="build metadata and push that collection to Hugging Face")
     return ap
@@ -368,6 +386,12 @@ def main() -> None:
     a = _parser().parse_args()
 
     store.load_env()
+    if a.flush:
+        # A failed push leaves staging intact on purpose: the documents are
+        # already recorded as collected, so if they were dropped here they
+        # would never be fetched again.
+        _flush(a.flush, 0)
+        return
     if a.publish:
         repo = publish_collection(a.publish)
         print(f"published to https://huggingface.co/datasets/{repo}")

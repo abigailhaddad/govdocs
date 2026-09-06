@@ -254,3 +254,12 @@ Meant for cron:
 
 Safe to run more often than necessary: the collector skips what it already has,
 and stops itself if the host dies partway through. It logs to `data/resume.log`.
+
+## When an upload fails
+
+    python -m govdocs.collect --flush govinfo
+
+A failed push leaves the staged documents on disk on purpose. They are already
+recorded as collected, so dropping them would mean they were never fetched
+again and never uploaded -- present in the manifest and nowhere else. `--flush`
+pushes whatever is staged and clears it.

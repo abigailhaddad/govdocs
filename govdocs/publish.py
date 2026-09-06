@@ -16,6 +16,14 @@ Layout in each dataset:
     documents/<source>/<doc_id>.pdf     the file as published by the agency
     metadata.parquet                    one row per document
 
+Documents are foldered by the first byte of their checksum --
+`documents/<source>/ab/<doc_id>.pdf`. Hugging Face rejects any commit that
+would leave more than 10,000 files in one directory, and the flat layout hit
+that at 9,997 with a 400 that no retry clears. 256 shards fill evenly, because
+a hash does, and carry 2.5M documents per source. The shard is recorded per
+document rather than recomputed, so the manifest keeps pointing at the older
+flat files rather than claiming they moved.
+
 PDFs are uploaded as files rather than packed into parquet binary columns, so
 they stay directly downloadable and the dataset viewer can show them. Hugging
 Face slows down badly past ~100k files in a repo, so documents are foldered by
