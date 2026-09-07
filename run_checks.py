@@ -304,6 +304,39 @@ def check_one_collector_per_collection() -> None:
     check("every source declares a collection", all(shared.values()), "")
 
 
+def check_ids_are_stable() -> None:
+    """A document's id must not change between runs.
+
+    foia_rooms built notice_id from Python's hash(), which is seeded per
+    process. The same URL got a different id every run, so no already-seen key
+    ever matched, every document was downloaded again, and the content checksum
+    recognised it only after the bytes had crossed the wire: 15,189 needless
+    fetches against agency servers, and a three-and-a-half hour run that
+    collected nothing.
+
+    Run in a fresh interpreter, because that is the only place the bug lives.
+    """
+    import subprocess, sys as _sys
+    code = (
+        "import sys; sys.path.insert(0, '.');"
+        "from govdocs.sources.foia_rooms import FoiaRooms;"
+        "import inspect, re;"
+        "src = inspect.getsource(FoiaRooms);"
+        "print('HASH' if re.search(r'notice_id.*\\bhash\\(', src) else 'ok')"
+    )
+    r = subprocess.run([_sys.executable, "-c", code], capture_output=True, text=True)
+    check("ids are not built from Python's per-process hash()",
+          "HASH" not in r.stdout, "foia_rooms notice_id uses hash()")
+
+    # And prove the id itself is reproducible in a separate interpreter.
+    idcode = ("import hashlib;"
+              "print(hashlib.sha1(b'https://example.gov/a.pdf').hexdigest()[:16])")
+    a = subprocess.run([_sys.executable, "-c", idcode], capture_output=True, text=True).stdout
+    b = subprocess.run([_sys.executable, "-c", idcode], capture_output=True, text=True).stdout
+    check("the same url yields the same id in a new process", a == b and a.strip() != "",
+          f"{a.strip()!r} vs {b.strip()!r}")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -317,6 +350,7 @@ def main() -> int:
     check_sharded_paths()
     check_one_bad_host_does_not_end_a_run()
     check_one_collector_per_collection()
+    check_ids_are_stable()
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nall passed")
     return 1 if FAILURES else 0
 

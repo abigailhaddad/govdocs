@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 import re
 import time
 import urllib.parse
@@ -302,7 +303,12 @@ class FoiaRooms:
                 name = row_title or _name_from_url(url)
                 yield {
                     "source": "foia_rooms",
-                    "notice_id": str(abs(hash(url)) % (10 ** 12)),
+                    # A stable id, not Python's hash(): that is seeded per
+                    # process, so the same URL got a different id on every run,
+                    # no already-seen key ever matched, and every document was
+                    # downloaded again to be recognised by its checksum after
+                    # the fact -- 15,189 refetches against agency servers.
+                    "notice_id": hashlib.sha1(url.encode()).hexdigest()[:16],
                     "index": 0,
                     "url": url,
                     "landing_url": start,
