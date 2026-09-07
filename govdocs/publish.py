@@ -40,9 +40,12 @@ from pathlib import Path
 DATASETS = {
     "sam": "abigailhaddad/sam-solicitation-documents",
     "foia": "abigailhaddad/foia-reading-room-documents",
-    # govinfo is neither: congressional hearings and GAO reports are published
-    # outright, not released on request, so filing them under a FOIA dataset
-    # would mislabel every row.
+    # govinfo is an index, not an archive. GPO is a statutory permanent-access
+    # institution and govinfo IS the system of record, so mirroring it bought
+    # nothing that would ever be lost -- 170GB of free public storage against a
+    # corpus with no risk of disappearing. The documents were deleted and the
+    # manifest kept: 19,902 rows, 3.5MB, every one naming the URL its PDF is
+    # still at. Collect from it only if something needs the bytes in bulk.
     "govinfo": "abigailhaddad/govinfo-documents",
 }
 
@@ -107,10 +110,14 @@ BLURBS = {
         "libraries: audits, inspections, investigative summaries and records "
         "released under the Freedom of Information Act."),
     "govinfo": (
-        "Documents published by the Government Publishing Office on govinfo.gov: "
-        "congressional hearings, committee reports and prints, congressional "
-        "documents, GAO reports, agency publications and presidential documents, "
-        "as PDFs byte-identical to GPO's own."),
+        "An index of what the Government Publishing Office publishes on "
+        "govinfo.gov -- congressional hearings, committee reports and prints, "
+        "congressional documents, GAO reports, agency publications and "
+        "presidential documents. One row per document with title, agency, date, "
+        "page count, checksum and the URL the PDF is served from. The files "
+        "themselves are not mirrored here: GPO guarantees permanent public "
+        "access to them, so copying them would duplicate a corpus that is not "
+        "at risk."),
 }
 
 PROVENANCE = {

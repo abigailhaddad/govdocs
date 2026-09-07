@@ -32,6 +32,12 @@ UA="govdocs/0.1 (federal document archive; contact: abigail.haddad@gmail.com)"
 LOG="data/resume.log"
 MIN_FREE_GB=5
 LIMIT=100
+# Everything govinfo has, not just the last few years. Sitemaps are walked
+# newest-first and collections interleave, so recent material still arrives
+# first -- an earlier floor adds the older tail rather than reordering.
+# GAOREPORTS is the clearest case: all 16,569 of its reports predate 2009, so
+# a 2020 floor made that collection permanently empty.
+SINCE=1900-01-01
 
 say() { echo "$(date '+%Y-%m-%d %H:%M:%S')  $*" >> "$LOG"; }
 
@@ -48,5 +54,5 @@ if [ "$free" -lt "$MIN_FREE_GB" ]; then
 fi
 
 say "probe $code, ${free}Gi free -- collecting $LIMIT"
-out=$(.venv/bin/python -m govdocs.collect --source govinfo --since 2020-01-01 --limit "$LIMIT" 2>&1)
+out=$(.venv/bin/python -m govdocs.collect --source govinfo --since "$SINCE" --limit "$LIMIT" 2>&1)
 say "$(echo "$out" | grep -E 'collected|stopped after|Error' | tr '\n' ' ')"

@@ -358,8 +358,8 @@ def publish_collection(collection: str) -> str:
         return repo_id
 
     meta_dir = Path(tempfile.mkdtemp(prefix="govdocs-meta-"))
-    build_metadata(collection, meta_dir)
-    publish.upload_folder(collection, meta_dir, "Update metadata")
+    if build_metadata(collection, meta_dir) is not None:
+        publish.upload_folder(collection, meta_dir, "Update metadata")
     shutil.rmtree(meta_dir, ignore_errors=True)
 
     for start in range(0, len(rows), BATCH):
@@ -388,9 +388,48 @@ def publish_collection(collection: str) -> str:
     return repo_id
 
 
-def build_metadata(collection: str, out_dir: Path) -> Path:
+def _published_manifest(collection: str) -> list[dict] | None:
+    """The manifest already in the dataset, or None if it could not be read.
+
+    None matters. This machine is not the only writer -- a scheduled Action
+    collects the same sources on its own cached state -- and each writer's
+    seen.jsonl is a different, partial history. Rebuilding the manifest from one
+    of them alone is how the foia dataset ended up with 9,797 files and a
+    manifest listing 1,504 of them: 8,300 documents present in the repo and
+    absent from the index that is supposed to describe it.
+
+    So the manifest is a union, and when the published copy cannot be fetched
+    the answer is to leave it alone rather than overwrite it with less.
+    """
+    import io
+    import requests
+    import pyarrow.parquet as pq
+
+    repo = publish.DATASETS[collection]
+    url = f"https://huggingface.co/datasets/{repo}/resolve/main/metadata.parquet"
+    for attempt in range(3):
+        try:
+            r = requests.get(url, timeout=180)
+            if r.status_code == 404:
+                return []          # a new dataset genuinely has no manifest
+            r.raise_for_status()
+            return pq.read_table(io.BytesIO(r.content)).to_pylist()
+        except Exception:
+            if attempt == 2:
+                return None
+            time.sleep(3)
+    return None
+
+
+def build_metadata(collection: str, out_dir: Path) -> Path | None:
     import pyarrow as pa
     import pyarrow.parquet as pq
+
+    published = _published_manifest(collection)
+    if published is None:
+        print("  could not read the published manifest; leaving it as it is "
+              "rather than replacing it with only what this machine knows")
+        return None
 
     rows = []
     if True:
@@ -417,10 +456,18 @@ def build_metadata(collection: str, out_dir: Path) -> Path:
                     "path": r.get("path") or
                             f"documents/{r.get('source','')}/{r['doc_id']}{r.get('ext','')}",
                 })
+    # Union by doc_id. This machine's row wins where both have one: it was
+    # written by the code running now, so it carries whatever fields the
+    # published copy predates.
+    merged = {r.get("doc_id"): r for r in published if r.get("doc_id")}
+    mine = {r["doc_id"] for r in rows}
+    merged.update({r["doc_id"]: r for r in rows})
     out = out_dir / "metadata.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist(rows), out)
-    print(f"metadata.parquet: {len(rows)} rows")
+    pq.write_table(pa.Table.from_pylist(list(merged.values())), out)
+    kept = len(merged) - len(mine)
+    print(f"metadata.parquet: {len(merged)} rows "
+          f"({len(rows)} from here, {kept} kept from the published manifest)")
     return out
 
 

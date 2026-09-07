@@ -11,9 +11,12 @@ Two collections, published as two datasets:
   statements, justifications, amendments, wage determinations.
 - `abigailhaddad/foia-reading-room-documents` — Inspector General reports and
   FOIA reading room records.
-- `abigailhaddad/govinfo-documents` — what GPO publishes on govinfo.gov:
-  congressional hearings, committee reports and prints, congressional
-  documents, GAO reports, agency publications and presidential documents.
+- `abigailhaddad/govinfo-documents` — an *index* of what GPO publishes on
+  govinfo.gov: hearings, committee reports and prints, congressional documents,
+  GAO reports, agency publications and presidential documents. Metadata only.
+  GPO is a statutory permanent-access institution and govinfo is the system of
+  record, so the files are not mirrored -- the manifest names the URL each PDF
+  is still served from.
 
 They are separate because they are different things and people want one, not
 all three. govinfo in particular is not a FOIA corpus: these documents are

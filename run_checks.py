@@ -337,6 +337,47 @@ def check_ids_are_stable() -> None:
           f"{a.strip()!r} vs {b.strip()!r}")
 
 
+def check_manifest_is_a_union() -> None:
+    """The manifest must never lose rows it did not write.
+
+    This machine is not the only writer: a scheduled Action collects the same
+    sources against its own cached seen.jsonl. Each rebuilt the manifest from
+    its own partial history and overwrote the other's, which left the foia
+    dataset holding 9,797 files and a manifest naming 1,504 -- 8,300 documents
+    present in the repo and missing from the index describing it.
+    """
+    import tempfile, json
+    from pathlib import Path as _P
+    import pyarrow.parquet as pq
+
+    tmp = _P(tempfile.mkdtemp())
+    seen = tmp / "seen.jsonl"
+    seen.write_text(json.dumps({
+        "key": "sam/mine_0", "doc_id": "mine_0", "collection": "sam",
+        "source": "sam", "sha256": "a", "bytes": 10, "pages": 1,
+        "path": "documents/sam/aa/mine_0.pdf"}) + "\n")
+
+    orig_seen, orig_pub = collect.SEEN, collect._published_manifest
+    try:
+        collect.SEEN = seen
+        # Pretend the dataset already lists a document this machine never saw.
+        collect._published_manifest = lambda c: [
+            {"doc_id": "theirs_0", "source": "sam", "title": "from the runner",
+             "path": "documents/sam/bb/theirs_0.pdf"}]
+        out = collect.build_metadata("sam", tmp)
+        ids = set(pq.read_table(out).to_pydict()["doc_id"])
+        check("a rebuild keeps rows written by the other collector",
+              {"mine_0", "theirs_0"} <= ids, f"got {sorted(ids)}")
+
+        # And an unreadable published manifest must not become an empty one.
+        collect._published_manifest = lambda c: None
+        skipped = collect.build_metadata("sam", tmp)
+        check("an unreadable manifest is left alone, not replaced",
+              skipped is None, "build_metadata wrote a manifest anyway")
+    finally:
+        collect.SEEN, collect._published_manifest = orig_seen, orig_pub
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -351,6 +392,7 @@ def main() -> int:
     check_one_bad_host_does_not_end_a_run()
     check_one_collector_per_collection()
     check_ids_are_stable()
+    check_manifest_is_a_union()
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nall passed")
     return 1 if FAILURES else 0
 
