@@ -199,4 +199,5 @@ class GovInfo:
     def fetch(self, rec: dict) -> tuple[bytes, str]:
         self._mods(rec)
         r = self._get(rec["url"], timeout=180)
+        rec["last_modified"] = r.headers.get("Last-Modified", "")
         return r.content, f"{rec['package_id']}.pdf"

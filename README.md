@@ -269,3 +269,22 @@ A failed push leaves the staged documents on disk on purpose. They are already
 recorded as collected, so dropping them would mean they were never fetched
 again and never uploaded -- present in the manifest and nowhere else. `--flush`
 pushes whatever is staged and clears it.
+
+## Dates
+
+Three sources, none authoritative alone. What the listing said wins, because it
+is the only one an agency wrote down deliberately. The PDF's own CreationDate
+comes next. A server's `Last-Modified` is the fallback, and it is what rescues
+the reading rooms: 3,441 of their documents arrived with no date at all, and
+every one of a sampled ten had the header.
+
+Which one was used is recorded beside the date as `date_source`, so a filter on
+"released since January" can be honest about whether it means the agency said so
+or a web server was last written to. Dates in the future are discarded rather
+than believed -- one document claimed 2028.
+
+    python -m govdocs.collect --backfill-dates foia
+
+asks each already-collected undated document's server. It rewrites
+`data/seen.jsonl` and so refuses to run while anything is collecting, since the
+rewrite would drop whatever a running collector appended meanwhile.

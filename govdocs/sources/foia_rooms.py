@@ -320,5 +320,9 @@ class FoiaRooms:
         self._wait(rec["url"])
         r = self.session.get(rec["url"], timeout=240, allow_redirects=True)
         r.raise_for_status()
+        # Reading rooms almost never date their listings. The server usually
+        # knows when the file was put there, which is the closest thing to a
+        # release date these pages offer.
+        rec["last_modified"] = r.headers.get("Last-Modified", "")
         name = urllib.parse.unquote(rec["url"].rstrip("/").split("/")[-1].split("?")[0])
         return r.content, name or "document.pdf"

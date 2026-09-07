@@ -156,6 +156,39 @@ def _pdf_facts(path: Path) -> tuple[int, str]:
         return 0, ""
 
 
+def _http_date(value: str) -> str:
+    """An RFC 7231 Last-Modified header as an ISO date, or blank."""
+    from email.utils import parsedate_to_datetime
+    try:
+        return parsedate_to_datetime(value).date().isoformat()
+    except Exception:
+        return ""
+
+
+def _pick_date(listed: str, pdf_date: str, last_modified: str) -> tuple[str, str]:
+    """The best date available, and which one it was.
+
+    Three sources, none of them authoritative on its own. What the listing said
+    wins when a listing said anything, because it is the only one the agency
+    wrote down deliberately. The PDF's CreationDate comes next. A server's
+    Last-Modified is the fallback, and it is what rescues FOIA reading rooms:
+    3,441 of their documents carried no date at all, and every one of a sampled
+    ten had the header.
+
+    Which one was used is recorded beside the date. A date that means "when the
+    file was last written to that web server" should not be silently
+    indistinguishable from one the agency published.
+    """
+    today = time.strftime("%Y-%m-%d")
+    for value, origin in ((listed, "listing"), (pdf_date, "pdf"),
+                          (last_modified, "http")):
+        v = (value or "").strip()[:10]
+        # A document released in the future is a bad date, not a scoop.
+        if v and v <= today:
+            return v, origin
+    return "", ""
+
+
 def collect(source_name: str, since: str, limit: int, max_calls: int,
             use_r2: bool = False) -> None:
     store.load_env()
@@ -248,8 +281,8 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(data)
         pages, pdf_date = (_pdf_facts(out) if ext == ".pdf" else (0, ""))
-        if not (rec.get("date") or "").strip():
-            rec["date"] = pdf_date
+        rec["date"], rec["date_source"] = _pick_date(
+            rec.get("date", ""), pdf_date, _http_date(rec.get("last_modified", "")))
 
         _record({"key": key, "sha256": digest, "r2_key": r2_key,
                  "doc_id": doc_id, "ext": ext, "bytes": len(data),
@@ -371,7 +404,11 @@ def build_metadata(collection: str, out_dir: Path) -> Path:
                     "agency": canonical(r.get("agency", "")),
                     "agency_raw": r.get("agency", ""),
                     "office": r.get("office", ""), "notice_type": r.get("notice_type", ""),
-                    "posted_date": r.get("date", ""), "url": r.get("url", ""),
+                    "posted_date": r.get("date", ""),
+                    # Which of listing / pdf / http the date came from, so a
+                    # filter on it can be honest about what it is filtering on.
+                    "date_source": r.get("date_source", ""),
+                    "url": r.get("url", ""),
                     "landing_url": r.get("landing_url", ""),
                     "filename": r.get("filename", ""), "ext": r.get("ext", ""),
                     "bytes": int(r.get("bytes", 0)), "pages": int(r.get("pages", 0)),
@@ -396,6 +433,9 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-calls", type=int, default=200)
     ap.add_argument("--r2", action="store_true",
                     help="also keep a copy in R2 (off by default)")
+    ap.add_argument("--backfill-dates", metavar="COLLECTION", default=None,
+                    help="ask each undated document's server when it was last "
+                         "modified; refuses to run while collecting")
     ap.add_argument("--flush", metavar="COLLECTION", default=None,
                     help="push whatever is staged on disk and clear it; use "
                          "after a failed upload left documents behind")
@@ -404,10 +444,77 @@ def _parser() -> argparse.ArgumentParser:
     return ap
 
 
+def backfill_dates(collection: str, workers: int = 8, delay: float = 0.5) -> None:
+    """Give already-collected documents a date from their server.
+
+    Reading rooms mostly do not date their listings, so 3,441 documents were
+    collected with no date at all and no way to tell a release from last month
+    apart from one from 2014. The server nearly always knows when the file was
+    put there. This asks, and records the answer as a `http` date rather than
+    pretending it is the same thing as a published one.
+
+    It rewrites seen.jsonl, so it refuses to run while anything is collecting:
+    a rewrite would drop whatever a running collector appended in the meantime.
+    """
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor
+
+    if subprocess.run(["pgrep", "-f", "govdocs.collect --source"],
+                      capture_output=True).returncode == 0:
+        raise SystemExit("a collection is running; seen.jsonl would lose its "
+                         "appends. Wait for it to finish.")
+
+    rows = [json.loads(l) for l in SEEN.read_text().splitlines() if l.strip()]
+    todo = [r for r in rows
+            if r.get("doc_id") and r.get("url")
+            and r.get("collection") == collection
+            and not (r.get("date") or "").strip()]
+    print(f"{len(todo)} undated documents in {collection}")
+    if not todo:
+        return
+
+    import urllib.parse as _up
+    by_host: dict[str, list[dict]] = {}
+    for r in todo:
+        by_host.setdefault(_up.urlparse(r["url"]).netloc, []).append(r)
+    print(f"across {len(by_host)} hosts")
+
+    import requests
+    ua = {"User-Agent": "govdocs/0.1 (federal document archive; "
+                        "contact: abigail.haddad@gmail.com)"}
+    found = {"n": 0}
+
+    def do_host(item):
+        host, items = item
+        sess = requests.Session()
+        sess.headers.update(ua)
+        for r in items:
+            time.sleep(delay)          # one host, one request at a time
+            try:
+                h = sess.head(r["url"], timeout=25, allow_redirects=True)
+                lm = h.headers.get("Last-Modified", "")
+            except Exception:
+                continue
+            iso = _http_date(lm)
+            if iso and iso <= time.strftime("%Y-%m-%d"):
+                r["date"], r["date_source"] = iso, "http"
+                found["n"] += 1
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(do_host, by_host.items()))
+
+    SEEN.write_text("".join(json.dumps(r, default=str) + "\n" for r in rows))
+    print(f"dated {found['n']} of {len(todo)}; seen.jsonl rewritten")
+    print("run --publish to push the updated manifest")
+
+
 def main() -> None:
     a = _parser().parse_args()
 
     store.load_env()
+    if a.backfill_dates:
+        backfill_dates(a.backfill_dates)
+        return
     if a.flush:
         # A failed push leaves staging intact on purpose: the documents are
         # already recorded as collected, so if they were dropped here they
