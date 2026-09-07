@@ -17,11 +17,20 @@ copyright. MuckRock's own API returns 401 without an account, and signing up
 means accepting terms -- so that one is not used, and should not be worked
 around. Public and unauthenticated is a different thing from credentialed.
 
-Two API details. order=created_at destroys relevance ranking: the API then
-returns the newest uploads whatever the query, which is town council agendas.
+Two API details. `order=created_at` keeps the query filter and sorts what it
+matched -- checked: `"final response" AND foia` returns the same 20,219 either
+way. What it does not survive is an untargeted query: ordering a bare `foia` by
+date returns the newest uploads that mention the statute, which is town council
+agendas. So the ordering is safe here precisely because the queries below are
+narrow, and would not be safe without them.
+
 And "freedom of information act" matches 396,713 documents, most citing the
 statute rather than resulting from it, so the queries match how agencies title a
 release instead.
+
+Ordering newest-first is the point: it front-loads recent releases without
+excluding anything, so a bounded run spends its budget on what was released
+lately and older material still arrives if the run is long enough.
 """
 
 from __future__ import annotations
@@ -36,10 +45,8 @@ ASSET = "https://s3.documentcloud.org/documents/{id}/{slug}.pdf"
 USER_AGENT = ("govdocs/0.1 (federal document archive; "
               "contact: abigail.haddad@gmail.com)")
 
-# Ordering by date destroys relevance ranking -- the API then returns the
-# newest public uploads regardless of the query, which is town council agendas.
-# These run on relevance, and are phrased to match how agencies title a release
-# rather than to match any mention of FOIA: "freedom of information act" alone
+# Phrased to match how agencies title a release rather than any mention of FOIA.
+# The narrowness is what makes date-ordering safe: "freedom of information act" alone
 # matches 396,713 documents, most of them citing the statute rather than being
 # a product of it.
 QUERIES = (
@@ -57,6 +64,13 @@ QUERIES = (
 )
 
 PER_PAGE = 100
+
+
+def _org_name(org: object) -> str:
+    """The uploading organisation's name. Unexpanded it is a bare id."""
+    if isinstance(org, dict):
+        return str(org.get("name") or org.get("slug") or "")
+    return ""
 
 
 class DocumentCloud:
@@ -78,7 +92,11 @@ class DocumentCloud:
         n = 0
         seen: set[int] = set()
         for q in QUERIES:
-            url = f"{SEARCH}?q={urllib.parse.quote(q)}&per_page={PER_PAGE}"
+            # order=created_at sorts this query's matches newest-first; it
+            # does not widen them. expand=organization turns the uploader from
+            # a bare id into a name.
+            url = (f"{SEARCH}?q={urllib.parse.quote(q)}&per_page={PER_PAGE}"
+                   f"&order=created_at&expand=organization")
             while url and self.calls < self.max_calls:
                 try:
                     d = self._get(url)
@@ -92,8 +110,10 @@ class DocumentCloud:
                         continue
                     seen.add(doc_id)
                     created = (r.get("created_at") or "")[:10]
-                    if since and created and created < since:
-                        continue
+                    # Deliberately not filtered on `since`. Results arrive
+                    # newest-first, so a bounded run already spends itself on
+                    # recent releases; dropping older ones would lose documents
+                    # that are wanted, just wanted less.
                     slug = r.get("slug") or str(doc_id)
                     yield {
                         "source": "documentcloud",
@@ -103,10 +123,13 @@ class DocumentCloud:
                         "landing_url": r.get("canonical_url") or "",
                         "title": (r.get("title") or slug)[:300],
                         "date": created,
-                        # Who uploaded it, which is the closest thing to
-                        # provenance DocumentCloud exposes without another call.
-                        "agency": str((r.get("organization") or ""))[:120],
-                        "office": "",
+                        # Left blank on purpose. The only party DocumentCloud
+                        # names is whoever uploaded the file, and a newsroom is
+                        # not the agency that released it -- putting "MuckRock
+                        # Staff" in the agency column would corrupt the one
+                        # field the whole archive is filtered on.
+                        "agency": "",
+                        "office": _org_name(r.get("organization"))[:200],
                         "notice_type": "FOIA release (DocumentCloud)",
                         "query": q,
                     }

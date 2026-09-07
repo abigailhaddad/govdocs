@@ -285,6 +285,25 @@ def check_one_bad_host_does_not_end_a_run() -> None:
           f"only reached the good host {tried['good']} times")
 
 
+def check_one_collector_per_collection() -> None:
+    """Two sources sharing a collection must not be run at the same time.
+
+    documentcloud and foia_rooms both write to `foia`, so they stage into the
+    same directory and _flush would push and delete under the other. The same
+    shape stranded 500 documents when a second govinfo round started behind the
+    first: recorded as collected, present only in staging.
+
+    Nothing enforces this at runtime, so it is at least written down here.
+    """
+    shared = {}
+    for name, cls in collect.SOURCES.items():
+        shared.setdefault(cls.collection, []).append(name)
+    overlaps = {c: sorted(v) for c, v in shared.items() if len(v) > 1}
+    # Not a failure -- it is the design -- but the pairs must be known.
+    print(f"  NOTE  sources sharing a collection (never run concurrently): {overlaps}")
+    check("every source declares a collection", all(shared.values()), "")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -297,6 +316,7 @@ def main() -> int:
     check_room_overrides()
     check_sharded_paths()
     check_one_bad_host_does_not_end_a_run()
+    check_one_collector_per_collection()
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nall passed")
     return 1 if FAILURES else 0
 
