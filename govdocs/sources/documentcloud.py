@@ -28,9 +28,15 @@ And "freedom of information act" matches 396,713 documents, most citing the
 statute rather than resulting from it, so the queries match how agencies title a
 release instead.
 
-Ordering newest-first is the point: it front-loads recent releases without
-excluding anything, so a bounded run spends its budget on what was released
-lately and older material still arrives if the run is long enough.
+Ordering newest-first is the point, and it also gives the run somewhere to
+stop: `--since` is a floor to walk down to rather than a filter. Once a query
+has returned a run of uploads older than it, every later page is older still,
+so the run moves to the next query instead of paging into 2016.
+
+`created_at` is when a file was uploaded, not when the agency released it. It
+is a good proxy -- a response letter posted last week was almost certainly
+answered recently -- but it is a proxy, and a 2019 release uploaded yesterday
+sorts as new.
 """
 
 from __future__ import annotations
@@ -77,6 +83,13 @@ DELAY = 1.0
 # A 429 is the server saying slow down, so it is worth one wait and one retry
 # before being recorded as a failure.
 BACKOFF = 30.0
+
+# Results arrive newest-first, so once a query is returning uploads older than
+# the cutoff every later page is older still and there is nothing left to find.
+# Not on the first one, though: `created_at` is when the file was uploaded, not
+# when it was released, and the ordering is the API's rather than a guarantee.
+# A run of them is evidence; one is a hiccup.
+OLDER_BEFORE_STOPPING = 25
 
 
 def _org_name(org: object) -> str:
@@ -125,6 +138,7 @@ class DocumentCloud:
         n = 0
         seen: set[int] = set()
         for q in QUERIES:
+            older = 0
             # order=created_at sorts this query's matches newest-first; it
             # does not widen them. expand=organization turns the uploader from
             # a bare id into a name.
@@ -143,10 +157,15 @@ class DocumentCloud:
                         continue
                     seen.add(doc_id)
                     created = (r.get("created_at") or "")[:10]
-                    # Deliberately not filtered on `since`. Results arrive
-                    # newest-first, so a bounded run already spends itself on
-                    # recent releases; dropping older ones would lose documents
-                    # that are wanted, just wanted less.
+                    if since and created and created < since:
+                        # Older than asked for. Counted rather than skipped:
+                        # enough in a row means this query has nothing newer
+                        # left and the next one is worth more than another page.
+                        older += 1
+                        if older >= OLDER_BEFORE_STOPPING:
+                            break
+                        continue
+                    older = 0
                     slug = r.get("slug") or str(doc_id)
                     yield {
                         "source": "documentcloud",
@@ -169,6 +188,8 @@ class DocumentCloud:
                     n += 1
                     if limit and n >= limit:
                         return
+                if older >= OLDER_BEFORE_STOPPING:
+                    break          # this query is done; try the next one
                 url = d.get("next")
 
     def fetch(self, rec: dict) -> tuple[bytes, str]:
