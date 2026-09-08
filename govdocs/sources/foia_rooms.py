@@ -33,6 +33,8 @@ from .room_overrides import resolve
 
 COMPONENTS_API = "https://api.foia.gov/api/agency_components"
 DIRECTORY = Path("data/reading_rooms.json")
+# What has been collected already, read to decide which rooms to visit first.
+SEEN_LOG = Path("data/seen.jsonl")
 REFRESH_AFTER_DAYS = 30
 
 USER_AGENT = ("govdocs/0.1 (federal document archive; "
@@ -260,9 +262,53 @@ class FoiaRooms:
             out.append((href, title))
         return out, list(dict.fromkeys(listings))
 
+    def _least_harvested_first(self, rooms: list[dict]) -> list[dict]:
+        """Rooms we have taken least from, first.
+
+        The directory is 404 listings and a run stops at its limit, so the
+        order decides what gets visited at all -- and in directory order that
+        was the same front stretch every time. ICE's 4,393 documents were
+        re-walked on every run while 21 hosts holding a thousand documents
+        between them, OGE's 669 among them, were never reached once.
+
+        Ordering by what has already been collected fixes that without
+        excluding anything: a room that has given nothing sorts first, a room
+        that has given thousands sorts last, and both are still visited by a
+        run long enough to get there.
+        """
+        taken: dict[str, int] = {}
+        failed: dict[str, int] = {}
+        if SEEN_LOG.exists():
+            for line in SEEN_LOG.read_text().splitlines():
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if r.get("source") != "foia_rooms" and not str(
+                        r.get("key", "")).startswith("foia_rooms/"):
+                    continue
+                url = r.get("url")
+                if not url:
+                    continue
+                h = urllib.parse.urlsplit(url).netloc
+                if r.get("doc_id"):
+                    taken[h] = taken.get(h, 0) + 1
+                elif r.get("error"):
+                    failed[h] = failed.get(h, 0) + 1
+
+        def key(r: dict) -> tuple[int, int]:
+            h = urllib.parse.urlsplit(r["url"]).netloc
+            # Failures break the tie among rooms that have given nothing, so a
+            # host that has never been tried sorts ahead of one that refuses
+            # every request. Otherwise the 59 walled agencies would lead every
+            # run and spend its first few hundred fetches being turned away.
+            return taken.get(h, 0), failed.get(h, 0)
+
+        return sorted(rooms, key=key)
+
     def discover(self, since: str, until: str | None = None,
                  limit: int | None = None) -> Iterator[dict]:
-        rooms = refresh_directory()
+        rooms = self._least_harvested_first(refresh_directory())
         n = 0
         seen_docs: set[str] = set()
         for room in rooms:

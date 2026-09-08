@@ -378,6 +378,43 @@ def check_manifest_is_a_union() -> None:
         collect.SEEN, collect._published_manifest = orig_seen, orig_pub
 
 
+def check_rooms_are_ordered_by_need() -> None:
+    """Rooms we have taken least from must be visited first.
+
+    In directory order a bounded run walked the same front stretch every time:
+    ICE's 4,393 documents re-checked on every pass while 21 hosts holding a
+    thousand documents between them -- OGE's 669 among them -- were never
+    reached once. Failures break the tie, so a host that has never been tried
+    sorts ahead of one that refuses everything.
+    """
+    import json, tempfile
+    from pathlib import Path as _P
+    from govdocs.sources import foia_rooms as fr
+
+    tmp = _P(tempfile.mkdtemp()) / "seen.jsonl"
+    tmp.write_text("\n".join(json.dumps(r) for r in [
+        {"source": "foia_rooms", "doc_id": "a", "url": "https://rich.gov/1.pdf"},
+        {"source": "foia_rooms", "doc_id": "b", "url": "https://rich.gov/2.pdf"},
+        {"source": "foia_rooms", "doc_id": "c", "url": "https://some.gov/1.pdf"},
+        {"key": "foia_rooms/x_0", "error": "fetch: 403", "url": "https://walled.gov/1.pdf"},
+        {"key": "foia_rooms/y_0", "error": "fetch: 403", "url": "https://walled.gov/2.pdf"},
+    ]))
+    rooms = [{"url": f"https://{h}/foia"} for h in
+             ("rich.gov", "walled.gov", "fresh.gov", "some.gov")]
+    orig = fr.SEEN_LOG
+    try:
+        fr.SEEN_LOG = tmp
+        order = [r["url"].split("/")[2]
+                 for r in fr.FoiaRooms(max_calls=1)._least_harvested_first(rooms)]
+    finally:
+        fr.SEEN_LOG = orig
+
+    check("an untried room comes before one that refuses everything",
+          order.index("fresh.gov") < order.index("walled.gov"), str(order))
+    check("the most-harvested room goes last",
+          order[-1] == "rich.gov", str(order))
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -393,6 +430,7 @@ def main() -> int:
     check_one_collector_per_collection()
     check_ids_are_stable()
     check_manifest_is_a_union()
+    check_rooms_are_ordered_by_need()
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nall passed")
     return 1 if FAILURES else 0
 
