@@ -173,9 +173,9 @@ def check_circuit_breaker() -> None:
 
     n = attempts["n"]
     check("a run stops once every fetch is failing",
-          n <= collect.MAX_CONSECUTIVE_FAILURES,
+          n <= collect.HOST_FAILURE_LIMIT,
           f"kept going for {n} failed fetches "
-          f"(limit is {collect.MAX_CONSECUTIVE_FAILURES})")
+          f"(limit is {collect.HOST_FAILURE_LIMIT})")
 
 
 def check_room_overrides() -> None:
@@ -415,6 +415,64 @@ def check_rooms_are_ordered_by_need() -> None:
           order[-1] == "rich.gov", str(order))
 
 
+def check_many_walled_hosts_do_not_end_a_run() -> None:
+    """Failures spread thinly across many hosts must not end a run either.
+
+    A global counter alongside the per-host one looked like a harmless
+    backstop. It was not: eight walled DOT hosts contributing a few 403s each,
+    none reaching the per-host limit alone, summed past the global one and
+    killed a run 329 requests in, before it reached any of the rooms it had
+    been reordered to visit.
+    """
+    import tempfile
+    from pathlib import Path as _P
+    tried = {"bad": 0, "good": 0}
+
+    class ManyWalledHosts:
+        name = collection = "probe"
+
+        def __init__(self, max_calls=200):
+            self.calls = 0
+
+        def discover(self, since, until=None, limit=None):
+            # Twelve hosts, five failures each -- 60 failures, none hitting the
+            # per-host limit of 10 -- then a host that works.
+            for h in range(12):
+                for i in range(5):
+                    yield {"source": "probe", "notice_id": f"w{h}_{i}", "index": 0,
+                           "url": f"https://walled{h}.invalid/{i}", "landing_url": "",
+                           "title": "", "date": "", "agency": "", "office": "",
+                           "notice_type": ""}
+            for i in range(4):
+                yield {"source": "probe", "notice_id": f"g{i}", "index": 0,
+                       "url": f"https://fine.invalid/{i}", "landing_url": "",
+                       "title": "", "date": "", "agency": "", "office": "",
+                       "notice_type": ""}
+
+        def fetch(self, rec):
+            if "walled" in rec["url"]:
+                tried["bad"] += 1
+                raise RuntimeError("403 Client Error: Forbidden")
+            tried["good"] += 1
+            return b"%PDF-1.4 ok", "x.pdf"
+
+    tmp = _P(tempfile.mkdtemp())
+    orig = (collect.SOURCES, collect.SEEN, collect.STAGE, collect._flush)
+    try:
+        collect.SOURCES = {"probe": ManyWalledHosts}
+        collect.SEEN = tmp / "seen.jsonl"
+        collect.STAGE = tmp / "stage"
+        collect._flush = lambda *a, **k: None
+        collect.collect("probe", since="2020-01-01", limit=50, max_calls=10)
+    finally:
+        (collect.SOURCES, collect.SEEN, collect.STAGE, collect._flush) = orig
+
+    check("failures spread across many hosts do not end the run",
+          tried["good"] == 4,
+          f"only reached the working host {tried['good']}/4 times after "
+          f"{tried['bad']} failures across 12 hosts")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -427,6 +485,7 @@ def main() -> int:
     check_room_overrides()
     check_sharded_paths()
     check_one_bad_host_does_not_end_a_run()
+    check_many_walled_hosts_do_not_end_a_run()
     check_one_collector_per_collection()
     check_ids_are_stable()
     check_manifest_is_a_union()

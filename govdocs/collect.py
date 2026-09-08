@@ -52,18 +52,20 @@ STAGE = Path("data/stage")
 # showed they were missing.
 MAX_BYTES = 2 * 1024 * 1024 * 1024
 
-# Stop a run once this many fetches fail in a row. When govinfo's content tier
-# went down, the collector did the locally-correct thing on each document --
-# record the error, move on -- and so walked 1,634 packages against a server
-# that was returning 502 to everything. Slowing the crawl does not help there;
-# it just spreads the same pointless traffic over more hours. A run that cannot
-# fetch anything should stop and let a later one pick it up.
-MAX_CONSECUTIVE_FAILURES = 25
-
-# ...but counted per host, because foia_rooms spans 223 of them and a quarter
-# refuse a plain request outright. Counted globally, one walled agency ended a
-# run that had 400 other rooms still to visit. A host that fails this many
-# times in a row is dropped for the rest of the run; the rest carry on.
+# Give up on a host after this many failures in a row, and carry on with the
+# others. There is deliberately no global counter beside it.
+#
+# There was one, and it was wrong twice over. foia_rooms visits 223 hosts and 59
+# refuse a plain request, so a run that opened on walled agencies collected the
+# DOT family's 403s -- FAA, FHWA, FRA, FMCSA, NHTSA, MARAD, PHMSA, Seaway, a
+# few each, none reaching this limit alone -- until twenty-five had accumulated
+# across them and the run aborted at Seaway, before reaching a single one of the
+# rooms it was reordered to visit. 747 seconds, 329 requests, nothing collected.
+#
+# And it was never needed. A source with one host -- govinfo during its outage --
+# reaches this limit on that host, is skipped from then on, and the run ends on
+# its own having spent ten requests. The per-host rule already does the job the
+# global one was added for.
 HOST_FAILURE_LIMIT = 10
 
 # How many documents to hold on disk at once while publishing. 300 averages a
@@ -201,11 +203,10 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
 
     keys, hashes = _seen()
     scratch = Path(tempfile.mkdtemp(prefix="govdocs-"))
-    got = dupes = fails = 0
+    got = dupes = 0
     host_fails: dict[str, int] = {}
     skipped_hosts: set[str] = set()
     t0 = time.time()
-    stopped_early = ""
 
     # `limit` counts documents actually collected, not records discovered.
     #
@@ -230,27 +231,21 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
             data, filename = src.fetch(rec)
         except Exception as exc:
             _record({"key": key, "url": rec["url"], "error": f"fetch: {exc}"})
-            fails += 1
             host_fails[host] = host_fails.get(host, 0) + 1
             if host_fails[host] >= HOST_FAILURE_LIMIT:
                 skipped_hosts.add(host)
-                fails = 0          # that host is out; the run is not
                 print(f"  giving up on {host} after {host_fails[host]} failures",
                       flush=True)
-            elif fails >= MAX_CONSECUTIVE_FAILURES:
-                stopped_early = (f"stopped after {fails} consecutive failures; "
-                                 f"last: {exc}")
-                break
             continue
-        fails = 0
         host_fails[host] = 0
         if not data:
             # A zero-byte response is a bad moment, not a verdict on the file.
             _record({"key": key, "url": rec["url"], "error": "empty response"})
-            fails += 1
-            if fails >= MAX_CONSECUTIVE_FAILURES:
-                stopped_early = f"stopped after {fails} consecutive failures; last: empty response"
-                break
+            host_fails[host] = host_fails.get(host, 0) + 1
+            if host_fails[host] >= HOST_FAILURE_LIMIT:
+                skipped_hosts.add(host)
+                print(f"  giving up on {host} after {host_fails[host]} empty replies",
+                      flush=True)
             continue
         if len(data) > MAX_BYTES:
             # Recorded, not settled: raising the cap should bring these back
@@ -303,8 +298,7 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
           f"({dupes} duplicate files skipped, {src.calls} search calls)")
     if skipped_hosts:
         print(f"  skipped {len(skipped_hosts)} unresponsive host(s)")
-    if stopped_early:
-        print(f"  {stopped_early}")
+
 
 
 def _flush(collection: str, n_so_far: int) -> None:
