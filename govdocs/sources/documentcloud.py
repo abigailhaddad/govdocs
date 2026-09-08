@@ -36,6 +36,8 @@ lately and older material still arrives if the run is long enough.
 from __future__ import annotations
 
 import json
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Iterator
@@ -65,6 +67,17 @@ QUERIES = (
 
 PER_PAGE = 100
 
+# Seconds between requests. Nothing here was throttled at all to begin with,
+# which cost 429s after about two thousand documents: ten in a row, and the
+# collector gave up on the host -- correctly, but it had already been asked to
+# stop and kept going. DocumentCloud publishes no rate, so this is the same
+# second-apart pace used for govinfo rather than a measured limit.
+DELAY = 1.0
+
+# A 429 is the server saying slow down, so it is worth one wait and one retry
+# before being recorded as a failure.
+BACKOFF = 30.0
+
 
 def _org_name(org: object) -> str:
     """The uploading organisation's name. Unexpanded it is a bare id."""
@@ -80,12 +93,32 @@ class DocumentCloud:
     def __init__(self, max_calls: int = 200):
         self.max_calls = max_calls
         self.calls = 0
+        self._last = 0.0
+
+    def _wait(self) -> None:
+        gap = DELAY - (time.monotonic() - self._last)
+        if gap > 0:
+            time.sleep(gap)
+        self._last = time.monotonic()
+
+    def _read(self, url: str, timeout: int) -> bytes:
+        """One request, with a single pause-and-retry if asked to slow down."""
+        for attempt in (0, 1):
+            self._wait()
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return resp.read()
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt == 0:
+                    time.sleep(BACKOFF)
+                    continue
+                raise
+        raise RuntimeError("unreachable")
 
     def _get(self, url: str) -> dict:
         self.calls += 1
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read())
+        return json.loads(self._read(url, timeout=120))
 
     def discover(self, since: str, until: str | None = None,
                  limit: int | None = None) -> Iterator[dict]:
@@ -139,7 +172,5 @@ class DocumentCloud:
                 url = d.get("next")
 
     def fetch(self, rec: dict) -> tuple[bytes, str]:
-        req = urllib.request.Request(rec["url"], headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            data = resp.read()
+        data = self._read(rec["url"], timeout=300)
         return data, rec["url"].rstrip("/").split("/")[-1]
