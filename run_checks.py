@@ -10,6 +10,7 @@ No network: these are all import-and-inspect, and run in well under a second.
 from __future__ import annotations
 
 import inspect
+import json
 import re
 
 from govdocs import collect, publish
@@ -473,6 +474,174 @@ def check_many_walled_hosts_do_not_end_a_run() -> None:
           f"{tried['bad']} failures across 12 hosts")
 
 
+def check_index_only_is_enforced() -> None:
+    """An index-only source must refuse to collect, not merely be documented.
+
+    govinfo was made an index on 2026-09-07 -- README, dataset card and
+    publish.py all say the files are not mirrored, and 170GB of PDFs were
+    deleted from the dataset. Nothing said so in collect.py, so a cron running
+    `--source govinfo` re-uploaded 300 of them over the following two days and
+    no step in the pipeline objected. The gap was between what the project said
+    and what it enforced.
+    """
+    check("INDEX_ONLY names govinfo",
+          "govinfo" in collect.INDEX_ONLY,
+          f"INDEX_ONLY = {collect.INDEX_ONLY!r}")
+
+    # Every index-only source must be refused by collect() itself, not by the
+    # CLI -- resume.sh called the module, and a check on the parser would have
+    # passed while the cron kept running.
+    for name in collect.INDEX_ONLY:
+        try:
+            collect.collect(name, since="1900-01-01", limit=1, max_calls=1)
+        except SystemExit as exc:
+            refused = "index" in str(exc).lower()
+        except Exception as exc:  # network, credentials, anything else
+            refused = False
+        else:
+            refused = False
+        check(f"collect({name!r}) refuses to mirror", refused)
+
+    # ...and the override has to exist, or the refusal is a dead end for the
+    # case publish.py explicitly anticipates ("if something needs the bytes").
+    sig = inspect.signature(collect.collect)
+    check("collect() has a mirror_anyway override",
+          "mirror_anyway" in sig.parameters)
+
+    src = inspect.getsource(collect._parser)
+    check("--mirror-anyway is wired to the parser",
+          "--mirror-anyway" in src)
+
+    # publish.py must not carry an index-only source into a file upload path.
+    for name in collect.INDEX_ONLY:
+        collection = collect.SOURCES[name].collection
+        check(f"{name} is still published as an index ({collection})",
+              collection in publish.DATASETS)
+
+
+def check_batch_stays_within_the_commit_budget() -> None:
+    """Documents are pushed in big batches because the API limits commits.
+
+    Hugging Face allows 128 commits an hour, and the limit is on requests, not
+    bytes -- one commit per document exhausts it in minutes, and huggingface_hub
+    turns a rejection into "retrying in smaller chunks", which spends the budget
+    faster still. Measured on a real run: 500 documents take about 110 seconds,
+    so BATCH=500 is roughly 32 commits an hour and BATCH=100 would be 161 --
+    over the limit. 250 is the floor.
+
+    This exists because recording documents only after their push (see
+    check_records_land_after_the_push) invites the idea of flushing more often
+    to lose less. It would trade a small loss for a hard API failure.
+    """
+    check("BATCH is large enough to stay under 128 commits/hour",
+          collect.BATCH >= 250, f"BATCH = {collect.BATCH}")
+
+
+def check_records_land_after_the_push() -> None:
+    """A document is recorded as collected only once its file has been pushed.
+
+    _seen() treats a recorded doc_id as settled, so a row written before the
+    upload is a promise the run may not keep: the GitHub job hit its 5h30m
+    timeout on two consecutive days, and anything staged but unpushed was
+    recorded as collected, discarded with the runner, and never retried.
+
+    Ordering inside _flush must be upload -> record -> delete staging.
+    """
+    src = inspect.getsource(collect._flush)
+    i_upload = src.find("upload_folder")
+    i_record = src.find("_record(row)")
+    i_rmtree = src.find("rmtree")
+    check("_flush uploads before it records", 0 <= i_upload < i_record,
+          f"upload at {i_upload}, record at {i_record}")
+    check("_flush records before it clears staging", 0 <= i_record < i_rmtree,
+          f"record at {i_record}, rmtree at {i_rmtree}")
+
+    # The collect loop must hand rows to _flush rather than writing them itself.
+    loop = inspect.getsource(collect.collect)
+    check("the collect loop defers collected rows to _flush",
+          "pending.append(" in loop and 'pending)' in loop)
+    check("no collected row is written straight to seen.jsonl",
+          '_record({"key": key, "sha256": digest, "r2_key"' not in loop)
+
+
+def check_a_death_mid_push_leaves_no_hole() -> None:
+    """If the push dies, nothing may be recorded as collected.
+
+    This is the failure the GitHub job produced twice: the run is killed part
+    way through a batch, the documents were already written to seen.jsonl, and
+    _seen() treats them as settled -- so the dataset never gets the files and no
+    later run ever asks for them again. Losing the work is fine; losing the
+    knowledge that the work is still owed is not.
+
+    Two runs here, over a real _flush with only the upload stubbed: one where
+    the push succeeds and one where it raises.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    class Tiny:
+        name = collection = "probe"
+
+        def __init__(self, max_calls=200):
+            self.calls = 0
+
+        def discover(self, since, until=None, limit=None):
+            for i in range(6):
+                yield {"source": "probe", "notice_id": f"d{i}", "index": 0,
+                       "url": f"https://fine.invalid/{i}", "landing_url": "",
+                       "title": "", "date": "", "agency": "", "office": "",
+                       "notice_type": ""}
+
+        def fetch(self, rec):
+            # Distinct bytes per record, or the sha256 check calls them dupes.
+            return b"%PDF-1.4 " + rec["notice_id"].encode(), "x.pdf"
+
+    def run(upload_works: bool) -> tuple[int, int]:
+        tmp = _P(tempfile.mkdtemp())
+        orig = (collect.SOURCES, collect.SEEN, collect.STAGE,
+                collect.build_metadata, publish.ensure_dataset,
+                publish.upload_folder)
+        try:
+            collect.SOURCES = {"probe": Tiny}
+            collect.SEEN = tmp / "seen.jsonl"
+            collect.STAGE = tmp / "stage"
+            collect.build_metadata = lambda *a, **k: None
+            publish.ensure_dataset = lambda *a, **k: None
+
+            def upload(*a, **k):
+                if not upload_works:
+                    raise RuntimeError("connection reset mid-push")
+            publish.upload_folder = upload
+
+            try:
+                collect.collect("probe", since="2020-01-01", limit=6, max_calls=5)
+            except RuntimeError:
+                pass        # the killed-run case
+
+            rows = 0
+            if collect.SEEN.exists():
+                rows = sum(1 for line in collect.SEEN.read_text().splitlines()
+                           if line.strip() and json.loads(line).get("doc_id"))
+            staged = sum(1 for f in (tmp / "stage").rglob("*") if f.is_file())
+            return rows, staged
+        finally:
+            (collect.SOURCES, collect.SEEN, collect.STAGE,
+             collect.build_metadata, publish.ensure_dataset,
+             publish.upload_folder) = orig
+
+    ok_rows, ok_staged = run(upload_works=True)
+    check("a successful push records what it pushed", ok_rows == 6,
+          f"recorded {ok_rows} of 6")
+    check("a successful push clears staging", ok_staged == 0,
+          f"{ok_staged} files left staged")
+
+    dead_rows, dead_staged = run(upload_works=False)
+    check("a failed push records nothing as collected", dead_rows == 0,
+          f"recorded {dead_rows} documents that were never pushed")
+    check("a failed push keeps staging for --flush to retry", dead_staged > 0,
+          "staging was cleared, so the batch cannot be retried")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -490,6 +659,10 @@ def main() -> int:
     check_ids_are_stable()
     check_manifest_is_a_union()
     check_rooms_are_ordered_by_need()
+    check_index_only_is_enforced()
+    check_batch_stays_within_the_commit_budget()
+    check_records_land_after_the_push()
+    check_a_death_mid_push_leaves_no_hole()
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nall passed")
     return 1 if FAILURES else 0
 

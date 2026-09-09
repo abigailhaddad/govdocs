@@ -44,6 +44,21 @@ SOURCES = {"documentcloud": DocumentCloud, "foia_rooms": FoiaRooms,
            "governmentattic": GovernmentAttic, "govinfo": GovInfo,
            "oversight": Oversight, "sam": Sam}
 
+# Sources whose documents are deliberately NOT mirrored. govinfo is the clear
+# case: GPO is a statutory permanent-access institution and govinfo IS the
+# system of record, so a copy protects nothing and cost 170GB. The files were
+# deleted from the dataset and the manifest kept, each row naming the URL its
+# PDF is still served from.
+#
+# The decision was made on 2026-09-07 and written into the README, the dataset
+# card and publish.py -- but not here, so a cron running `--source govinfo`
+# quietly re-uploaded PDFs into the emptied dataset for two days and nothing
+# complained. Documentation is not enforcement. This is the enforcement.
+#
+# Passing --mirror-anyway overrides it, for the case publish.py anticipates:
+# something genuinely needs the bytes in bulk.
+INDEX_ONLY = {"govinfo"}
+
 SEEN = Path("data/seen.jsonl")
 PUBLISHED = Path("data/published.jsonl")
 STAGE = Path("data/stage")
@@ -192,7 +207,13 @@ def _pick_date(listed: str, pdf_date: str, last_modified: str) -> tuple[str, str
 
 
 def collect(source_name: str, since: str, limit: int, max_calls: int,
-            use_r2: bool = False) -> None:
+            use_r2: bool = False, mirror_anyway: bool = False) -> None:
+    if source_name in INDEX_ONLY and not mirror_anyway:
+        raise SystemExit(
+            f"{source_name} is an index, not an archive: its documents are not "
+            f"mirrored (see INDEX_ONLY). Collecting would re-upload files that "
+            f"were deliberately deleted. Pass --mirror-anyway if you really "
+            f"need the bytes in bulk.")
     store.load_env()
     s3 = None
     if use_r2:
@@ -203,6 +224,7 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
 
     keys, hashes = _seen()
     scratch = Path(tempfile.mkdtemp(prefix="govdocs-"))
+    pending: list[dict] = []
     got = dupes = 0
     host_fails: dict[str, int] = {}
     skipped_hosts: set[str] = set()
@@ -279,21 +301,28 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
         rec["date"], rec["date_source"] = _pick_date(
             rec.get("date", ""), pdf_date, _http_date(rec.get("last_modified", "")))
 
-        _record({"key": key, "sha256": digest, "r2_key": r2_key,
-                 "doc_id": doc_id, "ext": ext, "bytes": len(data),
-                 "pages": pages, "path": rel,
-                 "filename": filename, "collection": collection, **rec})
+        # Held, not written. A collected document closes the door in _seen(),
+        # so recording it before its file is pushed means a run killed
+        # mid-batch leaves the manifest claiming documents that exist nowhere
+        # -- and no later run retries them. The GitHub job hit its timeout two
+        # days running, so this is the normal case, not the rare one. Writing
+        # after the push costs at most a re-fetch of one batch, which the
+        # sha256 check then recognises as a duplicate.
+        pending.append({"key": key, "sha256": digest, "r2_key": r2_key,
+                        "doc_id": doc_id, "ext": ext, "bytes": len(data),
+                        "pages": pages, "path": rel,
+                        "filename": filename, "collection": collection, **rec})
         got += 1
 
         staged_dir = STAGE / collection / "documents" / source_name
         if sum(1 for _ in staged_dir.rglob("*") if _.is_file()) >= BATCH:
-            _flush(collection, got)
+            _flush(collection, got, pending)
 
         if limit and got >= limit:
             break
 
     shutil.rmtree(scratch, ignore_errors=True)
-    _flush(collection, got)
+    _flush(collection, got, pending)
     print(f"collected {got} documents in {time.time()-t0:.0f}s "
           f"({dupes} duplicate files skipped, {src.calls} search calls)")
     if skipped_hosts:
@@ -301,18 +330,39 @@ def collect(source_name: str, since: str, limit: int, max_calls: int,
 
 
 
-def _flush(collection: str, n_so_far: int) -> None:
-    """Push whatever is staged, then clear it."""
+def _flush(collection: str, n_so_far: int, pending: list[dict] | None = None) -> None:
+    """Push whatever is staged, record it as collected, then clear it.
+
+    The order matters and is the whole point: upload, then write the manifest
+    rows, then delete staging. A crash before the upload loses nothing but
+    time -- the documents are simply re-fetched. A crash after it costs one
+    duplicate batch, which sha256 catches. The reverse order, which this
+    replaced, turned every killed run into a permanent hole.
+    """
     root = STAGE / collection
     files = [p for p in root.rglob("*") if p.is_file()]
     if not files:
+        # Rows waiting with nothing staged behind them is not a batch to
+        # record, it is inconsistent state -- the files are gone and the rows
+        # would claim documents the dataset does not hold. Drop them: the
+        # documents get re-fetched, which costs bandwidth, not a hole.
+        if pending:
+            print(f"  {len(pending)} recorded rows had no staged files; "
+                  f"dropping them so they are collected again", flush=True)
+            pending.clear()
         return
     meta_dir = root
     build_metadata(collection, meta_dir)
     publish.ensure_dataset(collection)
     publish.upload_folder(collection, root,
                           f"Add {len(files)} documents ({time.strftime('%Y-%m-%d')})")
-    print(f"  pushed {len(files)} files ({n_so_far} collected so far)", flush=True)
+    for row in (pending or []):
+        _record(row)
+    n_rows = len(pending or [])
+    if pending:
+        pending.clear()
+    print(f"  pushed {len(files)} files, recorded {n_rows} "
+          f"({n_so_far} collected so far)", flush=True)
     shutil.rmtree(root, ignore_errors=True)
 
 
@@ -472,6 +522,8 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--since", default="2025-01-20")
     ap.add_argument("--limit", type=int, default=500)
     ap.add_argument("--max-calls", type=int, default=200)
+    ap.add_argument("--mirror-anyway", action="store_true",
+                    help="collect an INDEX_ONLY source anyway (see INDEX_ONLY)")
     ap.add_argument("--r2", action="store_true",
                     help="also keep a copy in R2 (off by default)")
     ap.add_argument("--backfill-dates", metavar="COLLECTION", default=None,
@@ -566,7 +618,8 @@ def main() -> None:
         repo = publish_collection(a.publish)
         print(f"published to https://huggingface.co/datasets/{repo}")
         return
-    collect(a.source, a.since, a.limit, a.max_calls, use_r2=a.r2)
+    collect(a.source, a.since, a.limit, a.max_calls, use_r2=a.r2,
+            mirror_anyway=a.mirror_anyway)
 
 
 if __name__ == "__main__":

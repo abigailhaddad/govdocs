@@ -42,7 +42,14 @@ jobs:
         # seen.jsonl is what stops every run re-fetching the whole archive. It
         # is small, and caching it is enough: R2 holds the documents, so a cache
         # miss costs bandwidth rather than data.
-        uses: actions/cache@v4
+        #
+        # Restore and save are separate steps on purpose. actions/cache saves in
+        # a post-job hook that is skipped when the job is cancelled, and this
+        # job was cancelled by its own timeout on 2026-09-08 and 09: each run
+        # crawled for five and a half hours and then threw away everything it
+        # had learned, so the next day restored the same 09-07 state and redid
+        # the same work. One cache existed for three days of running.
+        uses: actions/cache/restore@v4
         with:
           path: |
             data/seen.jsonl
@@ -69,6 +76,7 @@ jobs:
       # cancelled the IG and reading-room crawls too.
       - name: Collect from SAM
         continue-on-error: true
+        timeout-minutes: 45
         env:
           CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
@@ -81,6 +89,7 @@ jobs:
 
       - name: Collect from Inspectors General
         continue-on-error: true
+        timeout-minutes: 30
         env:
           CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
@@ -91,6 +100,12 @@ jobs:
 
       - name: Collect from FOIA reading rooms
         continue-on-error: true
+        # The reading-room crawl is the long one -- it walks 400+ hosts with a
+        # real browser and today spent four hours before its first batch. Given
+        # its own budget it ends its own step and the job carries on to save
+        # state; without one it took the whole job down with it. 240 + the other
+        # two budgets + setup leaves headroom under the 330 job cap.
+        timeout-minutes: 220
         env:
           CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
@@ -117,6 +132,18 @@ jobs:
         run: |
           python -m govdocs.collect --publish sam
           python -m govdocs.collect --publish foia
+
+      - name: Save collection state
+        # if: always() so a cancelled or failed run still keeps what it learned.
+        # This is the step whose absence cost two full days of crawling.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/seen.jsonl
+            data/published.jsonl
+            data/reading_rooms.json
+          key: govdocs-state-${{ github.run_id }}
 
       - name: Summary
         if: always()
