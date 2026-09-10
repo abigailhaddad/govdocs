@@ -76,7 +76,9 @@ jobs:
       # cancelled the IG and reading-room crawls too.
       - name: Collect from SAM
         continue-on-error: true
-        timeout-minutes: 45
+        # Measured at 23 minutes for 4,000 documents; 35 is headroom, not a
+        # guess. The slack it used to hold was slack the reading rooms needed.
+        timeout-minutes: 35
         env:
           CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
@@ -89,7 +91,7 @@ jobs:
 
       - name: Collect from Inspectors General
         continue-on-error: true
-        timeout-minutes: 30
+        timeout-minutes: 20
         env:
           CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
@@ -101,11 +103,16 @@ jobs:
       - name: Collect from FOIA reading rooms
         continue-on-error: true
         # The reading-room crawl is the long one -- it walks 400+ hosts with a
-        # real browser and today spent four hours before its first batch. Given
-        # its own budget it ends its own step and the job carries on to save
-        # state; without one it took the whole job down with it. 240 + the other
-        # two budgets + setup leaves headroom under the 330 job cap.
-        timeout-minutes: 220
+        # real browser. Given its own budget it ends its own step and the job
+        # carries on to save state; without one it took the whole job down with
+        # it. 35 + 20 + 260 = 315 leaves 15 under the 330 job cap for setup and
+        # the cache save.
+        #
+        # Sized from a real run rather than guessed: 2,500 search calls took
+        # 10,362s, so 4.14s a call, so 3,500 calls is about 242 minutes. The
+        # step stopped on its call limit with 45 minutes of budget unspent --
+        # the limit was what capped the day's collection, not the clock.
+        timeout-minutes: 260
         env:
           CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
@@ -117,7 +124,7 @@ jobs:
         # headless is refused too. xvfb gives a screenless runner a display.
         run: |
           xvfb-run -a python -m govdocs.collect \
-            --source foia_rooms --since 2025-01-20 --limit 6000 --max-calls 2500
+            --source foia_rooms --since 2025-01-20 --limit 6000 --max-calls 3500
 
       # Collection pushes as it goes, one commit per batch. This step only
       # matters when documents are held in R2 and pushed separately.
