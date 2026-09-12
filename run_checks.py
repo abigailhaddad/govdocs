@@ -795,6 +795,77 @@ def check_sam_does_not_walk_types_in_order() -> None:
           "for ptype in self.ptypes" not in src)
 
 
+def check_sam_does_not_repage_finished_windows() -> None:
+    """A window read to the end is not read again.
+
+    Interleaving the notice types made every run start again at the beginning
+    of each one. On 2026-09-12 a pass spent its full 5,000-call budget and the
+    day's SAM quota to collect 15 documents: everything it found was already
+    held, and the calls went on proving it.
+
+    A window closes only when it was paged to the end AND has settled, because
+    SAM keeps accepting notices posted against a date that has passed -- closing
+    a window the day it ends loses those permanently.
+    """
+    import json as _json, tempfile as _tf
+    from datetime import date as _d, timedelta as _td
+    from pathlib import Path as _P
+    from govdocs.sources import sam as m
+
+    calls = {"n": 0}
+
+    class Fake(m.Sam):
+        def __init__(self, max_calls):
+            self.calls = 0
+            self.max_calls = max_calls
+            self.ptypes = ("k",)
+            self._done_cache = None
+
+        def _search(self, ptype, frm, to, offset):
+            if self.calls >= self.max_calls:
+                return []
+            self.calls += 1
+            calls["n"] += 1
+            return [{"noticeId": f"n{frm}", "fullParentPathName": "X", "type": "k",
+                     "resourceLinks": ["https://example.gov/a.pdf"]}]
+
+    tmp = _P(_tf.mkdtemp()) / "win.json"
+    orig = m.WINDOWS
+    try:
+        m.WINDOWS = tmp
+        old = _d.today() - _td(days=400)
+        Fake(50).discover(since=old.isoformat(),
+                          until=(old + _td(days=90)).isoformat())
+        first = list(Fake(50).discover(since=old.isoformat(),
+                                       until=(old + _td(days=90)).isoformat()))
+        after_first = calls["n"]
+        closed = len(_json.loads(tmp.read_text())) if tmp.exists() else 0
+        calls["n"] = 0
+        list(Fake(50).discover(since=old.isoformat(),
+                               until=(old + _td(days=90)).isoformat()))
+        second = calls["n"]
+    finally:
+        m.WINDOWS = orig
+
+    check("settled windows are recorded as finished", closed > 0,
+          f"{closed} windows closed after a full pass")
+    check("a second pass spends no calls on them", second == 0,
+          f"second pass made {second} calls (first made {after_first})")
+
+    # A window that has not settled must stay open.
+    tmp2 = _P(_tf.mkdtemp()) / "win.json"
+    try:
+        m.WINDOWS = tmp2
+        today = _d.today()
+        list(Fake(20).discover(since=(today - _td(days=3)).isoformat(),
+                               until=today.isoformat()))
+        still_open = not tmp2.exists() or _json.loads(tmp2.read_text()) == []
+    finally:
+        m.WINDOWS = orig
+    check("a window that has not settled stays open", still_open,
+          "a recent window was closed; late-posted notices would be lost")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -814,6 +885,7 @@ def main() -> int:
     check_a_sparse_local_row_cannot_blank_the_manifest()
     check_rooms_are_ordered_by_need()
     check_sam_does_not_walk_types_in_order()
+    check_sam_does_not_repage_finished_windows()
     check_index_only_is_enforced()
     check_retired_sources_are_enforced()
     check_the_box_passes_its_budgets_explicitly()

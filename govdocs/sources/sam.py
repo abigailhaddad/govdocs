@@ -32,6 +32,13 @@ USER_AGENT = ("govdocs/0.1 (federal document archive; "
 
 WINDOW_DAYS = 15
 SEEN_LOG = Path("data/seen.jsonl")
+# Windows already paged to the end, so a later run does not spend calls
+# re-reading them. See _done().
+WINDOWS = Path("data/sam_windows.json")
+# A window stays open for this long after it ends: SAM keeps accepting notices
+# posted against a date that has passed, and closing a window the day it ends
+# would miss them permanently.
+SETTLE_DAYS = 10
 PAGE = 1000
 KEEP = re.compile(r"\.(pdf|docx?|xlsx?|pptx?)$", re.I)
 
@@ -43,6 +50,8 @@ def _mmddyyyy(d: date) -> str:
 class Sam:
     name = "sam"
     collection = "sam"
+
+    _done_cache: set[str] | None = None
 
     def __init__(self, max_calls: int = 200, ptypes: tuple[str, ...] = ALL_PTYPES):
         if not os.environ.get("SAM_API_KEY"):
@@ -101,12 +110,39 @@ class Sam:
                     held[r["ptype"]] = held.get(r["ptype"], 0) + 1
         return sorted(self.ptypes, key=lambda pt: (held.get(pt, 0), pt))
 
+    def _done(self) -> set[str]:
+        """(ptype, window) pairs already paged to the end.
+
+        Without this a run re-reads every window it has ever finished. On
+        2026-09-12 a pass spent its whole 5,000-call budget and the day's SAM
+        quota to collect 15 documents, because interleaving the notice types
+        made it start again at the beginning of each one. The documents were
+        all already held; the calls were spent proving it.
+        """
+        if self._done_cache is None:
+            try:
+                self._done_cache = set(json.loads(WINDOWS.read_text()))
+            except Exception:
+                self._done_cache = set()
+        return self._done_cache
+
+    def _close(self, ptype: str, frm: date) -> None:
+        done = self._done()
+        done.add(f"{ptype}:{frm.isoformat()}")
+        WINDOWS.parent.mkdir(parents=True, exist_ok=True)
+        WINDOWS.write_text(json.dumps(sorted(done)))
+
     def _walk(self, ptype: str, start: date, end: date) -> Iterator[dict]:
         """Every attachment of one notice type, oldest window first."""
+        settled = date.today() - timedelta(days=SETTLE_DAYS)
         frm = start
         while frm <= end:
             to = min(frm + timedelta(days=WINDOW_DAYS), end)
+            if f"{ptype}:{frm.isoformat()}" in self._done():
+                frm = to + timedelta(days=1)
+                continue
             offset = 0
+            complete = False
             while True:
                 opps = self._search(ptype, frm, to, offset)
                 if not opps:
@@ -130,8 +166,14 @@ class Sam:
                             "ptype": ptype,
                         }
                 if len(opps) < PAGE:
+                    complete = True
                     break
                 offset += PAGE
+            # Only close a window that was read to the end AND has settled.
+            # A window closed while notices are still being posted against it
+            # loses them for good.
+            if complete and to < settled:
+                self._close(ptype, frm)
             frm = to + timedelta(days=1)
 
     def discover(self, since: str, until: str | None = None,
