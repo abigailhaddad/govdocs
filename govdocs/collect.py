@@ -59,6 +59,17 @@ SOURCES = {"documentcloud": DocumentCloud, "foia_rooms": FoiaRooms,
 # something genuinely needs the bytes in bulk.
 INDEX_ONLY = {"govinfo"}
 
+# Sources no longer collected. Two corpora are being kept -- SAM solicitation
+# attachments and FOIA reading rooms -- and the rest were exploratory. Their
+# existing rows stay in the datasets; nothing new is gathered.
+#
+# This is a set rather than a deletion because the source classes still work
+# and the decision could be revisited, and it is enforced here rather than
+# merely written down because the govinfo decision WAS merely written down:
+# the README, the dataset card and publish.py all said the files were not
+# mirrored while a cron re-uploaded 300 of them.
+RETIRED = {"oversight", "documentcloud", "governmentattic"}
+
 SEEN = Path("data/seen.jsonl")
 PUBLISHED = Path("data/published.jsonl")
 STAGE = Path("data/stage")
@@ -208,6 +219,11 @@ def _pick_date(listed: str, pdf_date: str, last_modified: str) -> tuple[str, str
 
 def collect(source_name: str, since: str, limit: int, max_calls: int,
             use_r2: bool = False, mirror_anyway: bool = False) -> None:
+    if source_name in RETIRED and not mirror_anyway:
+        raise SystemExit(
+            f"{source_name} is retired: sam and foia_rooms are the two sources "
+            f"still collected (see RETIRED). Its existing rows stay in the "
+            f"dataset. Pass --mirror-anyway to collect from it regardless.")
     if source_name in INDEX_ONLY and not mirror_anyway:
         raise SystemExit(
             f"{source_name} is an index, not an archive: its documents are not "

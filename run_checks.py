@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import pathlib
 import re
 
 from govdocs import collect, publish
@@ -642,6 +643,42 @@ def check_a_death_mid_push_leaves_no_hole() -> None:
           "staging was cleared, so the batch cannot be retried")
 
 
+def check_retired_sources_are_enforced() -> None:
+    """Only sam and foia_rooms are collected; the rest must refuse.
+
+    Same shape as check_index_only_is_enforced, and for the same reason: a
+    scope decision that lives only in prose gets undone by the next cron.
+    """
+    check("RETIRED covers the exploratory sources",
+          {"oversight", "documentcloud"} <= collect.RETIRED,
+          f"RETIRED = {collect.RETIRED!r}")
+    check("sam and foia_rooms are NOT retired",
+          not ({"sam", "foia_rooms"} & (collect.RETIRED | collect.INDEX_ONLY)))
+
+    for name in collect.RETIRED:
+        try:
+            collect.collect(name, since="1900-01-01", limit=1, max_calls=1)
+        except SystemExit as exc:
+            refused = "retired" in str(exc).lower()
+        except Exception:
+            refused = False
+        else:
+            refused = False
+        check(f"collect({name!r}) refuses: retired", refused)
+
+    # The workflow must not still be invoking a retired or relocated source.
+    wf = pathlib.Path(".github/workflows/collect.yml")
+    if wf.exists():
+        body = wf.read_text()
+        for name in sorted(collect.RETIRED):
+            check(f"the workflow does not collect {name}",
+                  f"--source {name}" not in body)
+        # The reading rooms run on the box now; two collectors writing one
+        # collection is what mis-built the manifest before.
+        check("the workflow leaves foia_rooms to the box",
+              "--source foia_rooms" not in body)
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -660,6 +697,7 @@ def main() -> int:
     check_manifest_is_a_union()
     check_rooms_are_ordered_by_need()
     check_index_only_is_enforced()
+    check_retired_sources_are_enforced()
     check_batch_stays_within_the_commit_budget()
     check_records_land_after_the_push()
     check_a_death_mid_push_leaves_no_hole()

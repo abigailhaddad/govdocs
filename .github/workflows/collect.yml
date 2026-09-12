@@ -10,7 +10,9 @@ name: collect
 
 on:
   schedule:
-    - cron: "17 6 * * *"      # daily, a bit after the SAM quota resets at midnight UTC
+    # Daily, a bit after the SAM quota resets at midnight UTC. Has consistently
+    # fired around 11:17 UTC rather than 06:17 -- GitHub's scheduling, not ours.
+    - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       publish:
@@ -25,7 +27,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -34,9 +36,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install
-        run: |
-          pip install --quiet boto3 requests huggingface_hub pymupdf pyarrow playwright
-          python -m playwright install --with-deps chromium
+        # No playwright or chromium: those exist for the reading-room crawl,
+        # which now runs on the box. SAM is a plain API and attachment fetch.
+        run: pip install --quiet boto3 requests huggingface_hub pymupdf pyarrow
 
       - name: Restore collection state
         # seen.jsonl is what stops every run re-fetching the whole archive. It
@@ -71,9 +73,14 @@ jobs:
             echo "$code  $u"
           done
 
-      # One step per source, each allowed to fail. A quota limit on one source
-      # says nothing about the others, and running them together meant a SAM 429
-      # cancelled the IG and reading-room crawls too.
+      # SAM is the only source this job collects now.
+      #
+      # The reading rooms moved to a Hetzner box (see deploy/): the crawl does
+      # not fit in a GitHub job, and its step was cut at the timeout mid-crawl
+      # every day. Two collectors writing one collection is the hazard that
+      # left the manifest listing 1,504 of 9,797 files, so it runs in exactly
+      # one place. The IG and DocumentCloud sources are retired -- sam and foia
+      # are the two corpora being kept.
       - name: Collect from SAM
         continue-on-error: true
         # Measured at 23 minutes for 4,000 documents; 35 is headroom, not a
@@ -88,43 +95,6 @@ jobs:
           SAM_API_KEY: ${{ secrets.SAM_API_KEY }}
           DATAGOV_API_KEY: ${{ secrets.DATAGOV_API_KEY }}
         run: python -m govdocs.collect --source sam --since 2025-01-20 --limit 4000 --max-calls 120
-
-      - name: Collect from Inspectors General
-        continue-on-error: true
-        timeout-minutes: 20
-        env:
-          CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
-          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
-          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
-          CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python -m govdocs.collect --source oversight --since 2015-01-01 --limit 3000
-
-      - name: Collect from FOIA reading rooms
-        continue-on-error: true
-        # The reading-room crawl is the long one -- it walks 400+ hosts with a
-        # real browser. Given its own budget it ends its own step and the job
-        # carries on to save state; without one it took the whole job down with
-        # it. 35 + 20 + 260 = 315 leaves 15 under the 330 job cap for setup and
-        # the cache save.
-        #
-        # Sized from a real run rather than guessed: 2,500 search calls took
-        # 10,362s, so 4.14s a call, so 3,500 calls is about 242 minutes. The
-        # step stopped on its call limit with 45 minutes of budget unspent --
-        # the limit was what capped the day's collection, not the clock.
-        timeout-minutes: 260
-        env:
-          CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
-          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
-          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
-          CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          DATAGOV_API_KEY: ${{ secrets.DATAGOV_API_KEY }}
-        # About a third of federal FOIA hosts refuse anything but a browser, and
-        # headless is refused too. xvfb gives a screenless runner a display.
-        run: |
-          xvfb-run -a python -m govdocs.collect \
-            --source foia_rooms --since 2025-01-20 --limit 6000 --max-calls 3500
 
       # Collection pushes as it goes, one commit per batch. This step only
       # matters when documents are held in R2 and pushed separately.
