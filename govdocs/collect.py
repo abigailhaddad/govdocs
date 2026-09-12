@@ -519,9 +519,29 @@ def build_metadata(collection: str, out_dir: Path) -> Path | None:
     # Union by doc_id. This machine's row wins where both have one: it was
     # written by the code running now, so it carries whatever fields the
     # published copy predates.
+    #
+    # Except when it does not. A collector seeded from the published manifest
+    # holds rows with an id, a checksum and a path and nothing else, and
+    # letting those win blanked title, agency, notice_type and posted_date on
+    # 16,714 SAM rows the first time the box flushed. "Newer" is not the same
+    # as "better informed", so a local row only replaces a published one when
+    # it does not lose fields: merge field by field, local first, published
+    # filling what local left empty.
+    DESCRIPTIVE = ("title", "agency", "office", "notice_type", "posted_date",
+                   "date_source", "landing_url", "filename")
+
+    def _merge(local: dict, pub: dict | None) -> dict:
+        if not pub:
+            return local
+        out = dict(local)
+        for k in DESCRIPTIVE:
+            if not out.get(k) and pub.get(k):
+                out[k] = pub[k]
+        return out
+
     merged = {r.get("doc_id"): r for r in published if r.get("doc_id")}
     mine = {r["doc_id"] for r in rows}
-    merged.update({r["doc_id"]: r for r in rows})
+    merged.update({r["doc_id"]: _merge(r, merged.get(r["doc_id"])) for r in rows})
     out = out_dir / "metadata.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(list(merged.values())), out)

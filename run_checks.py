@@ -706,6 +706,47 @@ def check_the_box_passes_its_budgets_explicitly() -> None:
               "--max-calls" in cmd)
 
 
+def check_a_sparse_local_row_cannot_blank_the_manifest() -> None:
+    """A published row's fields survive a local row that lacks them.
+
+    build_metadata unions published with local and local wins, on the
+    assumption that local was written by the code running now and so knows
+    more. A collector seeded from the manifest breaks that assumption: its rows
+    carry an id, a checksum and a path and nothing else. The first SAM flush
+    from the box overwrote 16,714 rows with those, blanking title, agency,
+    notice_type and posted_date -- the files were fine and the index describing
+    them was gutted.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    rich = {"doc_id": "d1", "source": "sam", "title": "A real title",
+            "agency": "GSA", "notice_type": "Combined Synopsis/Solicitation",
+            "posted_date": "2026-01-02", "sha256": "abc", "ext": ".pdf",
+            "bytes": 10, "pages": 1, "path": "documents/sam/ab/d1.pdf",
+            "url": "https://example.gov/d1.pdf"}
+    sparse = {"key": "sam/d1", "doc_id": "d1", "source": "sam", "sha256": "abc",
+              "path": "documents/sam/ab/d1.pdf", "url": "https://example.gov/d1.pdf",
+              "collection": "sam", "seeded_from": "published manifest"}
+
+    tmp = _P(tempfile.mkdtemp())
+    orig = (collect.SEEN, collect._published_manifest)
+    try:
+        collect.SEEN = tmp / "seen.jsonl"
+        collect.SEEN.write_text(json.dumps(sparse) + "\n")
+        collect._published_manifest = lambda c: [rich]
+        out = collect.build_metadata("sam", tmp)
+        import pyarrow.parquet as pq
+        got = {r["doc_id"]: r for r in pq.read_table(out).to_pylist()}
+    finally:
+        (collect.SEEN, collect._published_manifest) = orig
+
+    row = got.get("d1", {})
+    for field in ("title", "agency", "notice_type", "posted_date"):
+        check(f"a seeded row does not blank {field}",
+              bool(row.get(field)), f"{field}={row.get(field)!r}")
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -722,6 +763,7 @@ def main() -> int:
     check_one_collector_per_collection()
     check_ids_are_stable()
     check_manifest_is_a_union()
+    check_a_sparse_local_row_cannot_blank_the_manifest()
     check_rooms_are_ordered_by_need()
     check_index_only_is_enforced()
     check_retired_sources_are_enforced()

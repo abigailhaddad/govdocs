@@ -60,10 +60,15 @@ def main() -> int:
                 continue
             existing.add(key)
             by_source[source] += 1
-            rows.append({"key": key, "sha256": r.get("sha256"), "doc_id": doc_id,
-                         "source": source, "collection": collection,
-                         "path": r.get("path"), "url": r.get("url"),
-                         "seeded_from": "published manifest"})
+            # The whole manifest row, not a summary of it. A seeded row goes
+            # on to be a local row in build_metadata's union, and a sparse one
+            # there blanked title, agency, notice_type and posted_date across
+            # 16,714 SAM rows. Carry everything the manifest knew.
+            seeded = dict(r)
+            seeded.update({"key": key, "collection": collection,
+                           "date": r.get("posted_date") or r.get("date") or "",
+                           "seeded_from": "published manifest"})
+            rows.append(seeded)
 
     print(f"\n{len(rows):,} keys to add:")
     for s, n in by_source.most_common():
