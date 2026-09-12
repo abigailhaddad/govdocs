@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+from datetime import date
 import re
 import time
 import urllib.parse
@@ -35,6 +36,16 @@ COMPONENTS_API = "https://api.foia.gov/api/agency_components"
 DIRECTORY = Path("data/reading_rooms.json")
 # What has been collected already, read to decide which rooms to visit first.
 SEEN_LOG = Path("data/seen.jsonl")
+# What each room gave last time it was visited, so a run stops re-walking the
+# ones that never give anything. See _health().
+HEALTH = Path("data/room_health.json")
+# A room that came up empty is not written off, it is put to the back of the
+# queue for a while: 1 day, then 2, 4, 8, up to 32. A 403 wall is a property of
+# the crawler's welcome and can lift; a room that has genuinely been emptied
+# gets new documents eventually. Never visiting again would turn a bad
+# afternoon into a permanent hole, which is the mistake this project has
+# already made once with seen.jsonl.
+BACKOFF_DAYS = (1, 2, 4, 8, 16, 32)
 REFRESH_AFTER_DAYS = 30
 
 USER_AGENT = ("govdocs/0.1 (federal document archive; "
@@ -114,6 +125,8 @@ def refresh_directory(api_key: str | None = None, force: bool = False) -> list[d
 class FoiaRooms:
     name = "foia_rooms"
     collection = "foia"
+
+    _health_cache: dict | None = None
 
     def __init__(self, max_calls: int = 400):
         self.session = requests.Session()
@@ -306,9 +319,54 @@ class FoiaRooms:
 
         return sorted(rooms, key=key)
 
+    def _health(self) -> dict:
+        if self._health_cache is None:
+            try:
+                self._health_cache = json.loads(HEALTH.read_text())
+            except Exception:
+                self._health_cache = {}
+        return self._health_cache
+
+    def _due(self, room: dict) -> bool:
+        """Is this room worth a visit today?
+
+        The ordering already puts never-productive rooms first, which is right:
+        that is where anything new would be. But most of them are the 403 walls,
+        the dead hostnames and the genuinely empty ones, so every pass spent its
+        whole budget re-reading them -- 120 KB/s of fetching for zero collected
+        documents on 2026-09-12.
+        """
+        h = self._health().get(room.get("url", ""))
+        if not h:
+            return True
+        misses = int(h.get("empty_runs", 0))
+        if misses <= 0:
+            return True
+        wait = BACKOFF_DAYS[min(misses, len(BACKOFF_DAYS)) - 1]
+        try:
+            last = date.fromisoformat(h.get("last", "1970-01-01"))
+        except ValueError:
+            return True
+        return (date.today() - last).days >= wait
+
+    def _record_room(self, room: dict, found: int) -> None:
+        h = self._health()
+        row = h.setdefault(room.get("url", ""), {})
+        row["last"] = date.today().isoformat()
+        row["last_found"] = found
+        row["empty_runs"] = 0 if found else int(row.get("empty_runs", 0)) + 1
+        row["total"] = int(row.get("total", 0)) + found
+        HEALTH.parent.mkdir(parents=True, exist_ok=True)
+        HEALTH.write_text(json.dumps(h, indent=1, sort_keys=True))
+
     def discover(self, since: str, until: str | None = None,
                  limit: int | None = None) -> Iterator[dict]:
-        rooms = self._least_harvested_first(refresh_directory())
+        rooms = [r for r in self._least_harvested_first(refresh_directory())
+                 if self._due(r)]
+        skipped = len(refresh_directory()) - len(rooms)
+        if skipped:
+            print(f"  skipping {skipped} rooms that came up empty recently",
+                  flush=True)
         n = 0
         seen_docs: set[str] = set()
         for room in rooms:
@@ -320,6 +378,7 @@ class FoiaRooms:
                 continue
             html = self._get(start)
             if not html:
+                self._record_room(room, 0)
                 continue
             docs, listings = self._links(html, start)
 
@@ -342,6 +401,8 @@ class FoiaRooms:
                     if sub:
                         more, _ = self._links(sub, page)
                         docs.extend(more)
+            fresh = [u for u, _ in dict.fromkeys(docs) if u not in seen_docs]
+            self._record_room(room, len(fresh))
             for url, row_title in dict.fromkeys(docs):
                 if url in seen_docs:
                     continue

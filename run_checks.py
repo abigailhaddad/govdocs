@@ -866,6 +866,63 @@ def check_sam_does_not_repage_finished_windows() -> None:
           "a recent window was closed; late-posted notices would be lost")
 
 
+def check_empty_rooms_are_backed_off_not_abandoned() -> None:
+    """A room that gives nothing is visited less often, and never written off.
+
+    Ordering already puts never-productive rooms first, which is right -- that
+    is where anything new would be. But most of them are 403 walls, dead
+    hostnames and genuinely empty libraries, so a pass spent its entire budget
+    re-reading them: 120 KB/s of fetching and zero collected documents on
+    2026-09-12.
+
+    Backoff rather than exclusion, because this project has already made the
+    other mistake once. A 403 wall is a property of the crawler's welcome and
+    can lift, and an emptied room gets new documents eventually; a permanent
+    skip turns one bad afternoon into a hole nothing reports.
+    """
+    import json as _json, tempfile as _tf
+    from datetime import date as _d, timedelta as _td
+    from pathlib import Path as _P
+    from govdocs.sources import foia_rooms as fr
+
+    tmp = _P(_tf.mkdtemp()) / "health.json"
+    orig = fr.HEALTH
+    try:
+        fr.HEALTH = tmp
+        src = fr.FoiaRooms.__new__(fr.FoiaRooms)
+        src._health_cache = None
+
+        room = {"url": "https://example.gov/foia"}
+        check("an unvisited room is due", src._due(room))
+
+        src._record_room(room, 0)
+        check("a room that just came up empty is not due again today",
+              not src._due(room))
+
+        # ...but it comes back, and the wait grows rather than becoming forever.
+        h = src._health()[room["url"]]
+        waits = []
+        for misses in (1, 2, 3, 6, 12):
+            h["empty_runs"] = misses
+            h["last"] = (_d.today() - _td(days=64)).isoformat()
+            waits.append(src._due(room))
+        check("a long-dead room is still revisited eventually", all(waits),
+              f"due after 64 days at each miss count: {waits}")
+
+        h["empty_runs"] = 99
+        h["last"] = _d.today().isoformat()
+        check("the wait is capped, not unbounded",
+              max(fr.BACKOFF_DAYS) <= 60, f"max backoff {max(fr.BACKOFF_DAYS)} days")
+
+        # A productive visit clears the record.
+        src._record_room(room, 7)
+        check("a room that produces is due again immediately", src._due(room))
+        check("what a room gave is written down",
+              _json.loads(tmp.read_text())[room["url"]]["total"] == 7)
+    finally:
+        fr.HEALTH = orig
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -884,6 +941,7 @@ def main() -> int:
     check_manifest_is_a_union()
     check_a_sparse_local_row_cannot_blank_the_manifest()
     check_rooms_are_ordered_by_need()
+    check_empty_rooms_are_backed_off_not_abandoned()
     check_sam_does_not_walk_types_in_order()
     check_sam_does_not_repage_finished_windows()
     check_index_only_is_enforced()
