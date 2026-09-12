@@ -16,7 +16,7 @@ REPO_URL=https://github.com/abigailhaddad/govdocs
 DIR="$REPOS/$NAME"
 
 [ -s /etc/govdocs.env ] || {
-  echo "Missing /etc/govdocs.env with HF_TOKEN=... and DATAGOV_API_KEY=..."
+  echo "Missing /etc/govdocs.env with HF_TOKEN, DATAGOV_API_KEY and SAM_API_KEY"
   echo "  printf 'HF_TOKEN=hf_xxx\nDATAGOV_API_KEY=xxx\n' > /etc/govdocs.env"
   echo "  chmod 600 /etc/govdocs.env"
   exit 1; }

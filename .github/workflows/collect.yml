@@ -8,11 +8,16 @@ name: collect
 #   DATAGOV_API_KEY    api.data.gov key, used to read the FOIA component directory
 #   HF_TOKEN           write token for the datasets
 
+# Collection moved to the box (see deploy/). Both sources run there, in one
+# place, because two collectors writing one collection is what left the foia
+# dataset holding 9,797 files with a manifest listing 1,504 of them -- and SAM
+# on a 120-call budget never reached five of its nine notice types anyway.
+#
+# Left dispatchable rather than deleted: it is the fallback if the box is gone.
 on:
-  schedule:
-    # Daily, a bit after the SAM quota resets at midnight UTC. Has consistently
-    # fired around 11:17 UTC rather than 06:17 -- GitHub's scheduling, not ours.
-    - cron: "17 6 * * *"
+  # schedule:
+    # (Was daily at 06:17 UTC, which consistently fired around 11:17.)
+  #   - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       publish:
