@@ -11,7 +11,9 @@ that is what the API actually honours. August 2026 alone held 30,663 notices.
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 import re
 from datetime import date, timedelta
 from typing import Iterator
@@ -29,6 +31,7 @@ USER_AGENT = ("govdocs/0.1 (federal document archive; "
               "contact: abigail.haddad@gmail.com)")
 
 WINDOW_DAYS = 15
+SEEN_LOG = Path("data/seen.jsonl")
 PAGE = 1000
 KEEP = re.compile(r"\.(pdf|docx?|xlsx?|pptx?)$", re.I)
 
@@ -73,45 +76,92 @@ class Sam:
             return []
         return r.json().get("opportunitiesData") or []
 
+    def _least_collected_first(self) -> list[str]:
+        """Notice types we hold least of, first.
+
+        Types were walked in declaration order -- every window of `p`, then
+        every window of `k` -- and a run that stops on its call budget stops
+        part way down that list. With 120 calls against a 360-call minimum it
+        never got past the fourth of nine: Solicitation, Award Notice,
+        Justification, Intent to Bundle and Sale of Surplus had zero rows in a
+        16,714-row dataset, and every run reproduced that exactly.
+
+        Ordering by what is already held means a type that has given nothing
+        sorts first. Nothing is excluded; a long enough run still reaches all
+        of them.
+        """
+        held: dict[str, int] = {}
+        if SEEN_LOG.exists():
+            for line in SEEN_LOG.read_text().splitlines():
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if r.get("doc_id") and r.get("ptype"):
+                    held[r["ptype"]] = held.get(r["ptype"], 0) + 1
+        return sorted(self.ptypes, key=lambda pt: (held.get(pt, 0), pt))
+
+    def _walk(self, ptype: str, start: date, end: date) -> Iterator[dict]:
+        """Every attachment of one notice type, oldest window first."""
+        frm = start
+        while frm <= end:
+            to = min(frm + timedelta(days=WINDOW_DAYS), end)
+            offset = 0
+            while True:
+                opps = self._search(ptype, frm, to, offset)
+                if not opps:
+                    break
+                for o in opps:
+                    notice = o.get("noticeId") or ""
+                    path = o.get("fullParentPathName") or ""
+                    for i, url in enumerate(o.get("resourceLinks") or []):
+                        yield {
+                            "source": "sam",
+                            "notice_id": notice,
+                            "index": i,
+                            "url": url,
+                            "landing_url": o.get("uiLink")
+                            or f"https://sam.gov/opp/{notice}/view",
+                            "title": (o.get("title") or "")[:300],
+                            "date": (o.get("postedDate") or "")[:10],
+                            "agency": path.split(".")[0][:120],
+                            "office": path[:200],
+                            "notice_type": o.get("type", "")[:60],
+                            "ptype": ptype,
+                        }
+                if len(opps) < PAGE:
+                    break
+                offset += PAGE
+            frm = to + timedelta(days=1)
+
     def discover(self, since: str, until: str | None = None,
                  limit: int | None = None) -> Iterator[dict]:
+        """All nine notice types at once, not one after another.
+
+        Walking them in sequence means the budget decides which types exist in
+        the dataset rather than which documents do, and it decides it the same
+        way every run. Round-robin makes every type present in whatever the run
+        manages to collect: a pass cut off after a tenth of the work holds a
+        tenth of each type instead of all of two and none of seven.
+
+        The order the walkers start in is still least-collected-first, so a
+        short run puts its calls where the gaps are.
+        """
         start = date.fromisoformat(since)
         end = date.fromisoformat(until) if until else date.today()
+        walkers = [self._walk(pt, start, end) for pt in self._least_collected_first()]
         n = 0
-        for ptype in self.ptypes:
-            frm = start
-            while frm <= end:
-                to = min(frm + timedelta(days=WINDOW_DAYS), end)
-                offset = 0
-                while True:
-                    opps = self._search(ptype, frm, to, offset)
-                    if not opps:
-                        break
-                    for o in opps:
-                        notice = o.get("noticeId") or ""
-                        path = o.get("fullParentPathName") or ""
-                        for i, url in enumerate(o.get("resourceLinks") or []):
-                            yield {
-                                "source": "sam",
-                                "notice_id": notice,
-                                "index": i,
-                                "url": url,
-                                "landing_url": o.get("uiLink")
-                                or f"https://sam.gov/opp/{notice}/view",
-                                "title": (o.get("title") or "")[:300],
-                                "date": (o.get("postedDate") or "")[:10],
-                                "agency": path.split(".")[0][:120],
-                                "office": path[:200],
-                                "notice_type": o.get("type", "")[:60],
-                                "ptype": ptype,
-                            }
-                            n += 1
-                            if limit and n >= limit:
-                                return
-                    if len(opps) < PAGE:
-                        break
-                    offset += PAGE
-                frm = to + timedelta(days=1)
+        while walkers:
+            for w in list(walkers):
+                try:
+                    rec = next(w)
+                except StopIteration:
+                    walkers.remove(w)
+                    continue
+                yield rec
+                n += 1
+                if limit and n >= limit:
+                    return
 
     def fetch(self, rec: dict) -> tuple[bytes, str]:
         r = self.session.get(rec["url"], timeout=240, allow_redirects=True)

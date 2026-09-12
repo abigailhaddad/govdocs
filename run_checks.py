@@ -747,6 +747,54 @@ def check_a_sparse_local_row_cannot_blank_the_manifest() -> None:
               bool(row.get(field)), f"{field}={row.get(field)!r}")
 
 
+def check_sam_does_not_walk_types_in_order() -> None:
+    """A short SAM run must touch many notice types, not just the first.
+
+    Types were walked in declaration order, so a run that stopped on its call
+    budget always stopped in the same place: Solicitation, Award Notice,
+    Justification, Intent to Bundle and Sale of Surplus had zero rows in a
+    16,714-row dataset, every run, because the budget ran out during the third
+    of nine. The budget was deciding which types existed rather than how many
+    documents did.
+    """
+    from govdocs.sources import sam as sam_mod
+
+    calls = {"n": 0}
+    pages = {
+        # one page per (ptype, window), then empty -- enough to interleave
+        pt: [[{"noticeId": f"{pt}{i}", "fullParentPathName": "X", "type": pt,
+               "resourceLinks": [f"https://example.gov/{pt}{i}.pdf"]}
+              for i in range(3)]]
+        for pt in sam_mod.ALL_PTYPES
+    }
+
+    class Fake(sam_mod.Sam):
+        def __init__(self, max_calls):
+            self.calls = 0
+            self.max_calls = max_calls
+            self.ptypes = sam_mod.ALL_PTYPES
+
+        def _search(self, ptype, frm, to, offset):
+            if self.calls >= self.max_calls:
+                return []
+            self.calls += 1
+            calls["n"] += 1
+            got = pages[ptype]
+            return got.pop(0) if got else []
+
+    s = Fake(max_calls=6)
+    types = {r["ptype"] for r in s.discover(since="2026-01-01", until="2026-03-01")}
+    check("a 6-call SAM run touches more than two notice types",
+          len(types) > 2, f"touched {sorted(types)}")
+
+    # ...and the order is driven by what is already held.
+    src = inspect.getsource(sam_mod.Sam.discover)
+    check("discover orders walkers by what is already collected",
+          "_least_collected_first" in src)
+    check("discover interleaves rather than nesting a for-loop over types",
+          "for ptype in self.ptypes" not in src)
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -765,6 +813,7 @@ def main() -> int:
     check_manifest_is_a_union()
     check_a_sparse_local_row_cannot_blank_the_manifest()
     check_rooms_are_ordered_by_need()
+    check_sam_does_not_walk_types_in_order()
     check_index_only_is_enforced()
     check_retired_sources_are_enforced()
     check_the_box_passes_its_budgets_explicitly()
