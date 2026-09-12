@@ -6,3 +6,7 @@ data/
 
 # Hetzner API token
 deploy/.hcloud.env
+
+# dedupe bookkeeping
+data/dedupe_drops.json
+data/metadata.parquet.dedupe
