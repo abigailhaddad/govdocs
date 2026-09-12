@@ -18,15 +18,18 @@
 set -euo pipefail
 
 NAME="${WORKER_NAME:-govdocs-worker}"
-# cx22: 2 vCPU / 4 GB / 40 GB. The crawl is politeness-limited, not CPU-bound
+# cax11: 2 vCPU / 4 GB / 40 GB, ARM. cx22 and cx33 no longer exist on this
+# account -- the type line is versioned, check `hcloud server-type list` when
+# create 404s. ARM because x86 here is 5x the price (cpx21 is EUR 0.060/hr
+# against 0.011) and the crawl is politeness-limited anyway. The crawl is politeness-limited, not CPU-bound
 # -- the point of a box is hours, not speed -- so the constraint is Chromium's
 # memory rather than cores. Size up to cx33 if the unit starts hitting
 # MemoryMax; `hcloud server-type list` if this 404s, the line is versioned.
-TYPE="${WORKER_TYPE:-cx22}"
+TYPE="${WORKER_TYPE:-cpx21}"
 IMAGE="${WORKER_IMAGE:-ubuntu-24.04}"
 # Hetzner locations run out of stock; try the others if this refuses:
 # fsn1 nbg1 hel1 (EU), ash hil (US), sin.
-LOCATION="${WORKER_LOCATION:-fsn1}"
+LOCATION="${WORKER_LOCATION:-ash}"
 SSH_KEY_NAME="${WORKER_SSH_KEY:-}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
