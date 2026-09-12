@@ -679,6 +679,33 @@ def check_retired_sources_are_enforced() -> None:
               "--source foia_rooms" not in body)
 
 
+def check_the_box_passes_its_budgets_explicitly() -> None:
+    """Every collect call in run-collect.sh must set --max-calls itself.
+
+    Omitting it does not mean unbounded -- argparse supplies 200. The first
+    reading-room pass on the box ended after 200 search calls having collected
+    nothing, while the Action it replaced had been running 3,500. An omitted
+    budget is a small budget, silently.
+    """
+    script = pathlib.Path("deploy/run-collect.sh")
+    if not script.exists():
+        return
+    body = script.read_text()
+    default = collect._parser().get_default("max_calls")
+    check("the CLI still has a small --max-calls default worth guarding against",
+          isinstance(default, int) and default <= 1000, f"default={default}")
+
+    calls = [ln for ln in body.splitlines() if "govdocs.collect" in ln and "--source" in ln]
+    check("run-collect.sh invokes the collector", bool(calls))
+    for line in calls:
+        source = line.split("--source", 1)[1].split()[0]
+        # The flag may sit on the continuation line, so test the whole command.
+        start = body.index(line)
+        cmd = body[start:body.index("\n", body.index("--limit", start))]
+        check(f"the {source} pass sets --max-calls explicitly",
+              "--max-calls" in cmd)
+
+
 def main() -> int:
     print("govdocs checks")
     check_sources_shape()
@@ -698,6 +725,7 @@ def main() -> int:
     check_rooms_are_ordered_by_need()
     check_index_only_is_enforced()
     check_retired_sources_are_enforced()
+    check_the_box_passes_its_budgets_explicitly()
     check_batch_stays_within_the_commit_budget()
     check_records_land_after_the_push()
     check_a_death_mid_push_leaves_no_hole()

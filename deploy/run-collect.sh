@@ -31,6 +31,11 @@ SAM_MAX_CALLS=5000
 # foia_rooms.discover ignores `since` entirely: the crawl has always taken
 # whatever a room lists. The floor is passed for the signature's sake.
 FOIA_SINCE=1900-01-01
+# Explicit, because omitting --max-calls does not mean unbounded: the CLI
+# default is 200, and the first pass on the box ended after 200 calls having
+# collected nothing while the Action had been using 3,500. A pass here should
+# end when it runs out of rooms.
+FOIA_MAX_CALLS=50000
 
 # Big enough not to be the thing that stops a pass. A pass should end because
 # the source ran out of material or quota, not because of a number here.
@@ -68,7 +73,7 @@ while true; do
   # xvfb because about a third of federal FOIA hosts refuse anything but a
   # real browser, and refuse headless too.
   xvfb-run -a $PY -m govdocs.collect --source foia_rooms \
-    --since "$FOIA_SINCE" --limit "$LIMIT"
+    --since "$FOIA_SINCE" --limit "$LIMIT" --max-calls "$FOIA_MAX_CALLS"
 
   echo "==> pass ended $(date -u '+%F %T'); sleeping ${PAUSE}s"
   sleep "$PAUSE"
